@@ -1,0 +1,14 @@
+[Unit]
+Description=Renew the account-archive.service.ai-builder.world certificate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/data/service/certbot/program/bin/certbot renew \
+  --cert-name account-archive.service.ai-builder.world \
+  --config-dir /data/service/certbot/config/domains \
+  --work-dir /data/service/certbot/data/work-domains \
+  --logs-dir /data/service/certbot/logs/domains \
+  --no-random-sleep-on-renew --non-interactive \
+  --deploy-hook "/usr/sbin/nginx -t && /usr/bin/systemctl reload nginx"

@@ -1,0 +1,25 @@
+[Unit]
+Description=Account Archive (归屿 · 账号档案)
+RequiresMountsFor=/data/service/account-archive
+After=network.target
+
+[Service]
+Type=simple
+User=account-archive
+Group=account-archive
+WorkingDirectory=/data/service/account-archive/program/app
+EnvironmentFile=/data/service/account-archive/config/app.env
+ExecStart=/data/service/account-archive/program/runtime/bin/node server.mjs
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+MemoryMax=512M
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/data/service/account-archive/data
+
+[Install]
+WantedBy=multi-user.target
