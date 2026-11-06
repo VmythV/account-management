@@ -7,7 +7,9 @@ let context, busy=false, sensitiveTimer;
 const nowLocal=()=>localDateTime(new Date());
 function field(label,name,value='',options={}){
   const common=`id="field-${name}" name="${name}" ${options.required?'required':''} ${options.disabled?'disabled':''}`;
-  return `<div class="field"><label for="field-${name}">${label}${options.required?' *':''}</label>${options.textarea?`<textarea ${common} rows="3" maxlength="5000">${esc(value)}</textarea>`:`<input ${common} value="${esc(value)}" type="${options.type||'text'}" maxlength="${options.maxLength||150}" ${options.type==='password'?`autocomplete="${options.autocomplete||'new-password'}"`:''} ${options.code?'inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code"':''} ${options.type==='number'?`min="1" max="${options.max||31}" step="1"`:''} ${options.type==='datetime-local'?`max="${nowLocal()}" step="1"`:''} placeholder="${esc(options.placeholder||'')}">`}${options.help?`<small>${options.help}</small>`:''}</div>`;
+  const input=options.textarea?`<textarea ${common} rows="3" maxlength="5000">${esc(value)}</textarea>`:`<input ${common} value="${esc(value)}" type="${options.type||'text'}" maxlength="${options.maxLength||150}" ${options.type==='password'?`autocomplete="${options.autocomplete||'new-password'}"`:''} ${options.code?'inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code"':''} ${options.type==='number'?`min="1" max="${options.max||31}" step="1"`:''} ${options.type==='datetime-local'?`max="${nowLocal()}" step="1"`:''} placeholder="${esc(options.placeholder||'')}">`;
+  const control=name==='password'&&options.type==='password'?`<div class="password-input">${input}<button type="button" class="password-toggle" data-password-toggle aria-controls="field-password" aria-pressed="false" aria-label="显示正在填写的密码" ${options.disabled?'disabled':''}>显示</button></div>`:input;
+  return `<div class="field"><label for="field-${name}">${label}${options.required?' *':''}</label>${control}${options.help?`<small>${options.help}</small>`:''}</div>`;
 }
 function selectField(label,name,items,value,disabled=false){return `<div class="field"><label for="field-${name}">${label}</label><select id="field-${name}" name="${name}" ${disabled?'disabled':''} ${['account','source','from','to'].includes(name)?'data-search':''}>${items.map(item=>{const[v,l]=Array.isArray(item)?item:[item,item];return `<option value="${esc(v)}" ${v===value?'selected':''}>${esc(l)}</option>`;}).join('')}</select></div>`;}
 const accountOptions=()=>A.accounts.map(a=>[a.id,`${a.name} · ${a.identifier}`]);
@@ -130,7 +132,16 @@ async function save(form){
 export function bindForms(){
   document.addEventListener('change',e=>{if(e.target.id==='field-renewalCycle')updateRenewalFields();});
   document.addEventListener('input',e=>{if(e.target.id==='field-color')$('#color-value').textContent=e.target.value.toUpperCase();});
-  document.addEventListener('click',e=>{if(e.target.closest('[data-action="close-modal"]')&&!busy)$('#modal').close();});
+  document.addEventListener('click',e=>{
+    const toggle=e.target.closest('[data-password-toggle]'),input=$('#field-password');
+    if(toggle&&input&&!input.disabled){
+      const visible=input.type==='password';input.type=visible?'text':'password';
+      toggle.textContent=visible?'隐藏':'显示';
+      toggle.setAttribute('aria-pressed',String(visible));
+      toggle.setAttribute('aria-label',`${visible?'隐藏':'显示'}正在填写的密码`);
+    }
+    if(e.target.closest('[data-action="close-modal"]')&&!busy)$('#modal').close();
+  });
   $('#modal').addEventListener('cancel',e=>{if(busy)e.preventDefault();});
   $('#modal').addEventListener('close',()=>{
     clearTimeout(sensitiveTimer);destroySelects($('#modal-content'));$('#modal-content').innerHTML='';

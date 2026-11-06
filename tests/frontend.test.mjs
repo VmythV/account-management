@@ -51,7 +51,7 @@ function pageHarness(t){
   load('selects','','mountSelects,destroySelects');
   load('forms','const {Archive:A,api,reload}=modules.data;const {$,esc,icon,tagStyle,localDateTime,toast}=modules.ui;const {STATUSES}=modules.timeline;const {mountSelects,destroySelects}=modules.selects;','openModal,bindForms,afterMutation');
   load('app','const {Archive:A,api,reload}=modules.data;const {$,icon,esc,serviceIcon,tagStyle,localDateTime,toast}=modules.ui;const {graphData,graphMarkup,destroyGraphs,mountGraphs}=modules.graphs;const {openModal,bindForms,afterMutation}=modules.forms;const {formatDuration}=modules.timeline;const {mountSelects,destroySelects}=modules.selects;','render,state');
-  return {store,context,elements,runTimer(ms){for(const [id,timer] of timers)if(timer.ms===ms){timers.delete(id);timer.fn();}},windowEvent(type){for(const fn of windowListeners[type]||[])fn();},modules:context.modules,offline(value){offline=value;},expired(value){expired=value;},async submit(values){await listeners['modal-form:submit']({preventDefault(){},currentTarget:values});},async click(action,id){const button={dataset:{action,id}};for(const fn of listeners.click||[])await fn({target:{closest:selector=>selector==='[data-action]'?button:null}});}};
+  return {store,context,elements,runTimer(ms){for(const [id,timer] of timers)if(timer.ms===ms){timers.delete(id);timer.fn();}},windowEvent(type){for(const fn of windowListeners[type]||[])fn();},modules:context.modules,offline(value){offline=value;},expired(value){expired=value;},async submit(values){await listeners['modal-form:submit']({preventDefault(){},currentTarget:values});},async clickElement(selector,element){for(const fn of listeners.click||[])await fn({target:{closest:s=>s===selector?element:null}});},async click(action,id){const button={dataset:{action,id}};for(const fn of listeners.click||[])await fn({target:{closest:selector=>selector==='[data-action]'?button:null}});}};
 }
 
 test('账号库右侧进入指定账号详情并可编辑；网站表单保存、回填、链接转义与清空',async t=>{
@@ -117,6 +117,42 @@ test('绑定页面与密码表单；每次打开重新验证，超时、关闭�
   assert.equal(e.modal.open,false);assert.equal(e['modal-content'].innerHTML,'');
   h.context.document.hidden=false;now+=30000;await h.click('reveal-password',id);await h.submit({code:otp.generate({timestamp:now})});
   h.windowEvent('hashchange');assert.equal(e['modal-content'].innerHTML,'');
+});
+
+test('新增和编辑账号可显示、隐藏当前输入；不请求已保存密码或提交表单，重新打开默认隐藏',async t=>{
+  const h=pageHarness(t),{modules:m,elements:e}=h;
+  await m.data.reload();m.forms.openModal('new-account');
+  assert.match(e['modal-content'].innerHTML,/<button[^>]*data-password-toggle[^>]*disabled>显示<\/button>/);
+  e.modal.close();
+  const pending=h.store.vault.beginEnrollment();
+  h.store.vault.confirmEnrollment(pending,new TOTP({secret:pending.secret}).generate());
+  const stored='stored-password-must-not-appear';
+  const id=h.store.saveAccount({name:'测试账号',identifier:'demo',type:'平台',status:'正常',password:stored});
+  await m.data.reload();let networkCalls=0;
+  h.context.fetch=()=>{networkCalls++;throw new Error('不应请求服务器');};
+  for(const kind of ['new-account','edit-account']){
+    m.forms.openModal(kind,kind==='edit-account'?id:undefined);
+    const html=e['modal-content'].innerHTML;
+    assert.match(html,/name="password"[^>]*value="" type="password"/);
+    assert.match(html,/<button type="button"[^>]*data-password-toggle[^>]*aria-pressed="false"/);
+    assert.equal(html.includes(stored),false);
+    const typed='  newly-typed-密码<&>  ';
+    const input=e['field-password']={type:'password',value:typed,disabled:false};
+    const toggle={textContent:'显示',attributes:{},setAttribute(name,value){this.attributes[name]=value;}};
+    await h.clickElement('[data-password-toggle]',toggle);
+    assert.equal(input.type,'text');assert.equal(input.value,typed);
+    assert.equal(toggle.textContent,'隐藏');assert.equal(toggle.attributes['aria-pressed'],'true');
+    assert.equal(toggle.attributes['aria-label'],'隐藏正在填写的密码');
+    await h.clickElement('[data-password-toggle]',toggle);
+    assert.equal(input.type,'password');assert.equal(input.value,typed);
+    assert.equal(toggle.textContent,'显示');assert.equal(toggle.attributes['aria-pressed'],'false');
+    input.disabled=true;await h.clickElement('[data-password-toggle]',toggle);
+    assert.equal(input.type,'password');assert.equal(e.modal.open,true);
+    e.modal.close();m.forms.openModal(kind,kind==='edit-account'?id:undefined);
+    assert.match(e['modal-content'].innerHTML,/name="password"[^>]*value="" type="password"/);
+    assert.match(e['modal-content'].innerHTML,/aria-pressed="false"/);e.modal.close();
+  }
+  assert.equal(networkCalls,0);assert.equal(h.store.archive().accounts[0].version,1);
 });
 
 test('空库页面、任意账号、多选标签、保存失败保留表单及输入；页面转义',async t=>{
