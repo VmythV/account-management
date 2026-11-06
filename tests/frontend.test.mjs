@@ -45,8 +45,31 @@ function pageHarness(t){
   load('selects','','mountSelects,destroySelects');
   load('forms','const {Archive:A,api,reload}=modules.data;const {$,esc,icon,tagStyle,localDateTime,toast}=modules.ui;const {STATUSES}=modules.timeline;const {mountSelects,destroySelects}=modules.selects;','openModal,bindForms,afterMutation');
   load('app','const {Archive:A,api,reload}=modules.data;const {$,icon,esc,serviceIcon,tagStyle,localDateTime,toast}=modules.ui;const {graphData,graphMarkup,destroyGraphs,mountGraphs}=modules.graphs;const {openModal,bindForms,afterMutation}=modules.forms;const {formatDuration}=modules.timeline;const {mountSelects,destroySelects}=modules.selects;','render,state');
-  return {store,context,elements,modules:context.modules,offline(value){offline=value;},expired(value){expired=value;},async submit(values){await listeners['modal-form:submit']({preventDefault(){},currentTarget:values});}};
+  return {store,context,elements,modules:context.modules,offline(value){offline=value;},expired(value){expired=value;},async submit(values){await listeners['modal-form:submit']({preventDefault(){},currentTarget:values});},async click(action,id){const button={dataset:{action,id}};for(const fn of listeners.click||[])await fn({target:{closest:selector=>selector==='[data-action]'?button:null}});}};
 }
+
+test('账号库右侧直接编辑指定账号；网站表单保存、回填、链接转义与清空',async t=>{
+  const h=pageHarness(t),{modules:m,elements:e}=h;
+  const first=h.store.saveAccount({name:'第一个账号',identifier:'one',type:'平台',status:'正常'});
+  const id=h.store.saveAccount({name:'测试账号',identifier:'two',type:'平台',status:'正常'});
+  await m.data.reload();m.app.state.selected=first;m.app.render();
+  assert.ok(e.main.innerHTML.includes(`data-action="edit-account" data-id="${id}"`));
+  await h.click('edit-account',id);
+  assert.equal(e.modal.open,true);assert.equal(e['modal-title'].textContent,'编辑账号');
+  assert.equal(m.app.state.selected,first,'点击编辑不能触发行预览');
+  assert.match(e['modal-content'].innerHTML,/name="website"[^>]*type="url"/);
+  const values={name:'测试账号',identifier:'two',type:'平台',created:'',status:'正常',notes:'',website:'https://example.com/login?a=1&b=2',tagIds:[],newTags:[]};
+  await h.submit(values);assert.equal(m.data.Archive.get(id).website,values.website);
+  await h.click('edit-account',id);assert.match(e['modal-content'].innerHTML,/https:\/\/example.com\/login\?a=1&amp;b=2/);
+  e.modal.close();m.app.state.selected=id;m.app.render();
+  assert.match(e.main.innerHTML,/访问网站/);
+  h.context.location.hash=`#account/${id}/overview`;m.app.render();
+  assert.match(e.main.innerHTML,/href="https:\/\/example.com\/login\?a=1&amp;b=2" target="_blank" rel="noopener noreferrer"/);
+  await h.click('edit-account',id);await h.submit({...values,website:'javascript:alert(1)'});
+  assert.equal(e.modal.open,true);assert.match(e['form-error'].textContent,/网站地址/);
+  await h.submit({...values,website:''});
+  assert.equal(m.data.Archive.get(id).website,'');assert.doesNotMatch(e.main.innerHTML,/class="website-link"/);
+});
 
 test('空库页面、任意账号、多选标签、保存失败保留表单及输入；页面转义',async t=>{
   const h=pageHarness(t),{modules:m,elements:e}=h;

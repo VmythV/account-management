@@ -4,11 +4,44 @@ import { mkdtempSync, rmSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openStore } from '../lib/store.mjs';
+import { DatabaseSync } from 'node:sqlite';
 import { summarize } from '../public/timeline.js';
 
 const account=(overrides={})=>({name:'GitHub',identifier:'arbitrary-user',type:'平台账号',created:'',status:'正常',notes:'',tagIds:[],newTags:[],...overrides});
 const event=(overrides={})=>({occurredAt:'2025-01-01T00:00:00.000Z',action:'开通',status:'active',plan:'Pro',notes:'',renewalCycle:'monthly',renewalDay:31,renewalMonth:null,...overrides});
 const memory=t=>{const s=openStore(':memory:');t.after(()=>s.close());return s;};
+
+test('网站可选、编辑、清空和自动留痕；拒绝非网页链接与登录凭据',t=>{
+  const s=memory(t),id=s.saveAccount(account({website:' https://EXAMPLE.com/account?a=1&b=2 '}));
+  assert.equal(s.archive().accounts[0].website,'https://example.com/account?a=1&b=2');
+  s.saveAccount(account({notes:'旧页面编辑未发送网站字段',version:1}),id);
+  assert.equal(s.archive().accounts[0].website,'https://example.com/account?a=1&b=2');
+  s.saveAccount(account({website:'http://localhost:8080/login',version:2}),id);
+  assert.ok(s.archive().events.some(e=>e.text.includes('网站：https://example.com/account?a=1&b=2 → http://localhost:8080/login')));
+  s.saveAccount(account({website:'',version:3}),id);
+  assert.equal(s.archive().accounts[0].website,'');
+  for(const website of ['javascript:alert(1)','data:text/html,test','//example.com','example.com','ftp://example.com','https://','https://user:password@example.com','https://user@example.com','https://example.com/\npath','https://example.com/'+'x'.repeat(2048),{},42]) {
+    assert.throws(()=>s.saveAccount(account({website,version:4}),id),{status:400});
+  }
+  assert.equal(s.archive().accounts[0].version,4);
+});
+
+test('版本 1 数据库升级后保留账号、标签、关联、记录和订阅；重启不重复迁移',t=>{
+  const dir=mkdtempSync(join(tmpdir(),'archive-migration-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const path=join(dir,'archive.sqlite');let s=openStore(path);
+  const a=s.saveAccount(account({newTags:['工作'],notes:'原有备注'}));
+  const b=s.saveAccount(account({identifier:'other',source:a,relation:'注册'}));
+  s.createSubscription({account:b,name:'套餐',...event()});
+  const before=JSON.parse(JSON.stringify(s.archive()));s.close();
+  const legacy=new DatabaseSync(path);
+  legacy.exec('ALTER TABLE accounts DROP COLUMN website; PRAGMA user_version=1;');legacy.close();
+  s=openStore(path);assert.deepEqual(JSON.parse(JSON.stringify(s.archive())),before);
+  s.saveAccount(account({website:'https://example.com',version:1}),a);s.close();
+  s=openStore(path);assert.equal(s.archive().accounts.find(x=>x.id===a).website,'https://example.com/');s.close();
+  const db=new DatabaseSync(path);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version,2);
+  assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check,'ok');db.close();
+});
 
 test('账号与任意颜色标签持久化；改名同步；删除标签保留账号；归档可恢复',t=>{
   const dir=mkdtempSync(join(tmpdir(),'archive-store-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));

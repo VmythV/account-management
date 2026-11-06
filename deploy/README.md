@@ -58,6 +58,8 @@ sudo /data/service/certbot/program/bin/certbot renew \
 
 ## 更新与回退
 
+2026-11-06 版本增加账号库直接编辑和账号网站。数据库从版本 1 自动升级至 2，只新增 `accounts.website` 字段，原有数据不变。回退到版本 1 程序时必须先保存升级后的数据，再恢复升级前备份；不能直接让旧程序读取版本 2 数据库。
+
 1. 测试通过后，用 `git archive` 导出指定提交。不要打包本地 `.env`、数据库或密码文件。
 2. 上传部署包，校验 SHA-256，解压到新的 `program/releases/<提交号>/`，保留旧版本。
 3. 停止应用，备份完整 `data/` 与 `config/app.env` 到仅 root 可访问的备份目录。

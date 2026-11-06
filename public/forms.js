@@ -27,7 +27,7 @@ export function openModal(kind,id){
   if(kind==='new-account'||kind==='edit-account'){
     const a=kind==='edit-account'?A.get(id):null;context.record=a;
     title=a?'编辑账号':'新增账号';
-    content=`<p class="modal-description">邮箱、用户名、手机号或任意账号标识都可以。</p><div class="form-grid">${field('服务 / 平台名称','name',a?.name||'',{required:true})}${field('账号类型','type',a?.type||'',{required:true,placeholder:'邮箱、游戏平台、自定义类型…'})}</div>${field('账号标识','identifier',a?.identifier||'',{required:true,maxLength:300,help:'只记录标识，不保存账号密码。'})}<div class="form-grid">${field('注册日期（未知可留空）','created',a?.created||'',{type:'date'})}${selectField('账号状态','status',['正常','已归档'],a?.status||'正常')}</div>${tagsField(a?.tagIds||[])}${field('备注','notes',a?.notes||'',{textarea:true})}${a?'':`<div class="form-divider"><h3>关联已有账号（选填）</h3>${selectField('注册 / 登录来源','source',[['','暂不关联'],...accountOptions()],'')}${field('关联方式','relation','邮箱注册')}</div>`}`;
+    content=`<p class="modal-description">邮箱、用户名、手机号或任意账号标识都可以。</p><div class="form-grid">${field('服务 / 平台名称','name',a?.name||'',{required:true})}${field('账号类型','type',a?.type||'',{required:true,placeholder:'邮箱、游戏平台、自定义类型…'})}</div>${field('账号标识','identifier',a?.identifier||'',{required:true,maxLength:300,help:'只记录标识，不保存账号密码。'})}${field('网站（选填）','website',a?.website||'',{type:'url',maxLength:2048,placeholder:'https://example.com',help:'填写完整网站地址，保存后可直接打开。'})}<div class="form-grid">${field('注册日期（未知可留空）','created',a?.created||'',{type:'date'})}${selectField('账号状态','status',['正常','已归档'],a?.status||'正常')}</div>${tagsField(a?.tagIds||[])}${field('备注','notes',a?.notes||'',{textarea:true})}${a?'':`<div class="form-divider"><h3>关联已有账号（选填）</h3>${selectField('注册 / 登录来源','source',[['','暂不关联'],...accountOptions()],'')}${field('关联方式','relation','邮箱注册')}</div>`}`;
   }else if(kind==='new-link'||kind==='edit-link'){
     const r=kind==='edit-link'?A.links.find(r=>r.id===id):null;context.record=r;
     title=r?'修改账号关联':'建立账号关联';
@@ -82,7 +82,7 @@ async function save(form){
   if(kind==='help'){$('#modal').close();return;}
   if(['new-account','edit-account'].includes(kind)){
     path='/api/accounts'+(record?'/'+id:'');method=record?'PUT':'POST';
-    body={name:d.name,identifier:d.identifier,type:d.type,created:d.created,status:d.status,notes:d.notes,tagIds:fd.getAll('tagIds'),newTags:fd.getAll('newTags'),...(record?{version:record.version}:{source:d.source,relation:d.relation})};
+    body={name:d.name,identifier:d.identifier,type:d.type,created:d.created,status:d.status,notes:d.notes,website:d.website,tagIds:fd.getAll('tagIds'),newTags:fd.getAll('newTags'),...(record?{version:record.version}:{source:d.source,relation:d.relation})};
   }else if(['new-tag','edit-tag'].includes(kind)){path='/api/tags'+(record?'/'+id:'');method=record?'PUT':'POST';body={name:d.name,color:d.color,...(record?{version:record.version}:{})};}
   else if(['new-link','edit-link'].includes(kind)){path='/api/relations'+(record?'/'+id:'');method=record?'PUT':'POST';body={from:d.from,to:d.to,type:d.type,notes:d.notes,...(record?{version:record.version}:{})};}
   else if(['new-event','edit-event'].includes(kind)){

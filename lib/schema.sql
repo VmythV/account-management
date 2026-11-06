@@ -6,6 +6,7 @@ CREATE TABLE accounts (
   created TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN ('正常','已归档')),
   notes TEXT NOT NULL,
+  website TEXT NOT NULL DEFAULT '',
   insertedAt TEXT NOT NULL,
   version INTEGER NOT NULL DEFAULT 1,
   UNIQUE(name, identifier)
