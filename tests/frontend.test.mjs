@@ -4,17 +4,18 @@ import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { openStore } from '../lib/store.mjs';
+import { TOTP } from 'otpauth';
 import * as timeline from '../public/timeline.js';
 
 function pageHarness(t){
   const store=openStore(':memory:');t.after(()=>store.close());
-  const listeners={},elements={};
-  for(const id of ['main','navigation','sidebar-tags','breadcrumb-current','toast','modal','modal-form','modal-title','modal-content','modal-submit','form-error','reauth-link']){
-    elements[id]={querySelectorAll:()=>[],innerHTML:'',textContent:'',hidden:true,open:false,addEventListener(type,fn){listeners[id+':'+type]=fn;},showModal(){this.open=true;},close(){this.open=false;}};
+  const listeners={},elements={},timers=new Map(),windowListeners={};let timerId=0,pending;
+  for(const id of ['main','navigation','sidebar-tags','breadcrumb-current','toast','modal','modal-form','modal-title','modal-content','modal-submit','form-error','reauth-link','modal-note','modal-cancel','revealed-password']){
+    elements[id]={querySelectorAll:()=>[],innerHTML:'',textContent:'',hidden:true,open:false,addEventListener(type,fn){listeners[id+':'+type]=fn;},showModal(){this.open=true;},close(){this.open=false;listeners[id+':close']?.();}};
   }
   let offline=false,expired=false;
-  const context=vm.createContext({modules:{timeline},console,Date,URL,Set,Map,JSON,setTimeout:()=>0,clearTimeout(){},setInterval(){},
-    location:{hash:'#accounts'},window:{addEventListener(){},scrollTo(){}},
+  const context=vm.createContext({modules:{timeline},console,Date,URL,Set,Map,JSON,setTimeout(fn,ms){timers.set(++timerId,{fn,ms});return timerId;},clearTimeout(id){timers.delete(id);},setInterval(){},
+    location:{hash:'#accounts'},window:{addEventListener(type,fn){(windowListeners[type]??=[]).push(fn);},scrollTo(){}},
     document:{hidden:false,activeElement:null,querySelector:s=>elements[s.slice(1)]||null,querySelectorAll:()=>[],getElementById:id=>elements[id],addEventListener(type,fn){(listeners[type]??=[]).push(fn);},dispatchEvent(e){for(const fn of listeners[e.type]||[])fn(e);}},
     CustomEvent:class {constructor(type,{detail}){this.type=type;this.detail=detail;}},
     FormData:class{constructor(values){this.values=Object.entries(values).flatMap(([key,value])=>[].concat(value).map(v=>[key,v]));}[Symbol.iterator](){return this.values[Symbol.iterator]();}getAll(key){return this.values.filter(v=>v[0]===key).map(v=>v[1]);}},
@@ -25,7 +26,12 @@ function pageHarness(t){
       try{
         const input=opts.body?JSON.parse(opts.body):{},parts=path.split('/'),resource=parts[2],id=parts[3];
         if(resource==='archive')result=store.archive();
-        else if(resource==='accounts')result={id:store.saveAccount(input,id)};
+        else if(resource==='security'){
+          if(parts[4]==='confirm'){store.vault.confirmEnrollment(pending,input.code);result={ok:true};}
+          else if(opts.method==='DELETE'){pending=null;result={ok:true};}
+          else {pending=store.vault.beginEnrollment();result={secret:pending.secret,qr:'data:image/png;base64,TEST',expires:Date.now()+600000};}
+        }
+        else if(resource==='accounts')result=parts[4]==='password'?{password:store.vault.reveal(id,input.code)}:{id:store.saveAccount(input,id)};
         else if(resource==='tags')result={id:store.saveTag(input,id)};
         else if(resource==='relations')result={id:store.saveRelation(input,id)};
         else if(resource==='events')result={id:store.saveEvent(input,id)};
@@ -45,7 +51,7 @@ function pageHarness(t){
   load('selects','','mountSelects,destroySelects');
   load('forms','const {Archive:A,api,reload}=modules.data;const {$,esc,icon,tagStyle,localDateTime,toast}=modules.ui;const {STATUSES}=modules.timeline;const {mountSelects,destroySelects}=modules.selects;','openModal,bindForms,afterMutation');
   load('app','const {Archive:A,api,reload}=modules.data;const {$,icon,esc,serviceIcon,tagStyle,localDateTime,toast}=modules.ui;const {graphData,graphMarkup,destroyGraphs,mountGraphs}=modules.graphs;const {openModal,bindForms,afterMutation}=modules.forms;const {formatDuration}=modules.timeline;const {mountSelects,destroySelects}=modules.selects;','render,state');
-  return {store,context,elements,modules:context.modules,offline(value){offline=value;},expired(value){expired=value;},async submit(values){await listeners['modal-form:submit']({preventDefault(){},currentTarget:values});},async click(action,id){const button={dataset:{action,id}};for(const fn of listeners.click||[])await fn({target:{closest:selector=>selector==='[data-action]'?button:null}});}};
+  return {store,context,elements,runTimer(ms){for(const [id,timer] of timers)if(timer.ms===ms){timers.delete(id);timer.fn();}},windowEvent(type){for(const fn of windowListeners[type]||[])fn();},modules:context.modules,offline(value){offline=value;},expired(value){expired=value;},async submit(values){await listeners['modal-form:submit']({preventDefault(){},currentTarget:values});},async click(action,id){const button={dataset:{action,id}};for(const fn of listeners.click||[])await fn({target:{closest:selector=>selector==='[data-action]'?button:null}});}};
 }
 
 test('账号库右侧进入指定账号详情并可编辑；网站表单保存、回填、链接转义与清空',async t=>{
@@ -78,11 +84,46 @@ test('账号库右侧进入指定账号详情并可编辑；网站表单保存�
   assert.equal(m.data.Archive.get(id).website,'');assert.doesNotMatch(e.main.innerHTML,/class="website-link"/);
 });
 
+test('绑定页面与密码表单；每次打开重新验证，超时、关闭和切走清除密码',async t=>{
+  const original=Date.now;let now=1_800_000_000_000;Date.now=()=>now;t.after(()=>{Date.now=original;});
+  const h=pageHarness(t),{modules:m,elements:e}=h;
+  await m.data.reload();h.context.location.hash='#security';m.app.render();
+  assert.match(e.main.innerHTML,/绑定验证器/);
+  await h.click('bind-totp');await h.submit({accessPassword:'test-access-password'});
+  const secret=e['modal-content'].innerHTML.match(/<code>([A-Z2-7]+)<\/code>/)[1],otp=new TOTP({secret});
+  assert.match(e['modal-content'].innerHTML,/data:image\/png/);
+  await h.submit({code:otp.generate({timestamp:now})});
+  assert.equal(e.modal.open,false);assert.equal(e['modal-content'].innerHTML,'');
+  assert.equal(m.data.Archive.security.twoFactorEnabled,true);
+  m.forms.openModal('new-account');
+  assert.doesNotMatch(e['modal-content'].innerHTML,/name="password"[^>]*disabled/);
+  const password='  <script>secret</script>  ';
+  await h.submit({name:'加密账号',identifier:'user',type:'平台',created:'',status:'正常',notes:'',password,tagIds:[],newTags:[]});
+  const id=m.data.Archive.accounts[0].id;
+  assert.equal(m.data.Archive.accounts[0].hasPassword,true);
+  assert.equal(e.main.innerHTML.includes(password),false);
+  await h.click('edit-account',id);assert.equal(e['modal-content'].innerHTML.includes(password),false);e.modal.close();
+  now+=30000;await h.click('reveal-password',id);
+  await h.submit({code:'bad'});assert.equal(e.modal.open,true);assert.match(e['form-error'].textContent,/6 位/);
+  await h.submit({code:otp.generate({timestamp:now})});
+  assert.equal(e['revealed-password'].textContent,password,'密码保留空格，使用 textContent 显示');
+  assert.equal(e['modal-submit'].hidden,true);h.runTimer(30000);
+  assert.equal(e.modal.open,false);assert.equal(e['modal-content'].innerHTML,'');
+  await h.click('reveal-password',id);assert.match(e['modal-content'].innerHTML,/name="code"/);
+  assert.equal(e['modal-content'].innerHTML.includes(password),false);
+  await h.submit({code:otp.generate({timestamp:now})});assert.match(e['form-error'].textContent,/已经使用/);
+  now+=30000;await h.submit({code:otp.generate({timestamp:now})});
+  h.context.document.hidden=true;h.context.document.dispatchEvent({type:'visibilitychange'});
+  assert.equal(e.modal.open,false);assert.equal(e['modal-content'].innerHTML,'');
+  h.context.document.hidden=false;now+=30000;await h.click('reveal-password',id);await h.submit({code:otp.generate({timestamp:now})});
+  h.windowEvent('hashchange');assert.equal(e['modal-content'].innerHTML,'');
+});
+
 test('空库页面、任意账号、多选标签、保存失败保留表单及输入；页面转义',async t=>{
   const h=pageHarness(t),{modules:m,elements:e}=h;
   await m.data.reload();
   for(const route of ['accounts','tags','graph','subscriptions','records']){h.context.location.hash='#'+route;m.app.render();assert.ok(e.main.innerHTML.length>100);}
-  m.forms.openModal('new-account');assert.ok(e['modal-content'].innerHTML.includes('未知可留空'));assert.ok(!e['modal-content'].innerHTML.includes('type="password"'));
+  m.forms.openModal('new-account');assert.ok(e['modal-content'].innerHTML.includes('未知可留空'));assert.match(e['modal-content'].innerHTML,/name="password"[^>]*disabled/);
   const values={name:'<script>Test</script>',identifier:'arbitrary-user',type:'平台',created:'',status:'正常',notes:'备注',newTags:['个人','工作'],source:'',relation:'邮箱注册'};
   const formHTML=e['modal-content'].innerHTML;h.offline(true);await h.submit(values);
   assert.equal(e.modal.open,true);assert.equal(e['modal-content'].innerHTML,formHTML);assert.match(e['form-error'].textContent,/连接失败/);

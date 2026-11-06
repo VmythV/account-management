@@ -10,3 +10,4 @@ access.json
 *.db-*
 .DS_Store
 coverage/
+*.key

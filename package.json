@@ -3,10 +3,17 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24.19.0 <25" },
+  "engines": {
+    "node": ">=24.19.0 <25"
+  },
   "scripts": {
     "start": "node --env-file-if-exists=.env server.mjs",
     "dev": "node --env-file-if-exists=.env --watch server.mjs",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "reset-2fa": "node --env-file-if-exists=.env scripts/reset-2fa.mjs"
+  },
+  "dependencies": {
+    "otpauth": "9.6.0",
+    "qrcode": "1.5.4"
   }
 }

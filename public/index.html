@@ -23,14 +23,14 @@
     <nav id="navigation"></nav>
     <div class="nav-label tags-heading"><span>我的标签</span><button class="icon-button" data-action="new-tag" aria-label="新建标签" title="新建标签">＋</button></div>
     <div id="sidebar-tags"></div><a class="manage-tags" href="#tags">管理标签</a>
-    <div class="sidebar-bottom"><div class="privacy-note"><span data-icon="shield"></span><div>只记账号，不存密码<small>为你的数字生活留一份地图</small></div></div><div class="profile"><span class="avatar">M</span><span>我的档案<small>仅自己可访问</small></span></div></div>
+    <div class="sidebar-bottom"><div class="privacy-note"><span data-icon="shield"></span><div>密码加密，查看需验证<small>为你的数字生活留一份地图</small></div></div><div class="profile"><span class="avatar">M</span><span>我的档案<small>仅自己可访问</small></span></div></div>
   </aside>
   <div class="app-shell">
     <header class="topbar"><div class="breadcrumb"><span data-icon="grid"></span><span>个人空间</span><span class="slash">/</span><span id="breadcrumb-current">账号库</span></div><div class="topbar-right"><a id="reauth-link" href="/login?reauth=1" target="_blank" rel="noopener" hidden>重新登录</a><button class="text-button" data-action="refresh">刷新数据</button><button class="text-button" data-action="logout">锁定退出</button><span class="demo-indicator"></span><span>数据持久保存</span><button class="icon-button" data-action="help" aria-label="使用说明" title="使用说明"><span data-icon="help"></span></button></div></header>
     <main id="main" tabindex="-1"><p class="hint">正在读取账号档案…</p></main>
     <footer class="page-footer"><span>把分散的账号，连成清晰的脉络。</span><span>归屿 <span class="footer-dot">·</span> 个人账号档案</span></footer>
   </div>
-  <dialog id="modal" aria-labelledby="modal-title"><form id="modal-form"><div class="modal-heading"><div><span class="eyebrow" id="modal-eyebrow">ACCOUNT ARCHIVE</span><h2 id="modal-title"></h2></div><button type="button" class="icon-button" data-action="close-modal" aria-label="关闭弹窗"><span data-icon="close"></span></button></div><div id="modal-content"></div><p id="form-error" role="alert" hidden></p><div class="modal-footer"><span>保存到本地数据库</span><button type="button" class="button" data-action="close-modal">取消</button><button class="button primary" type="submit" id="modal-submit">保存</button></div></form></dialog>
+  <dialog id="modal" aria-labelledby="modal-title"><form id="modal-form"><div class="modal-heading"><div><span class="eyebrow" id="modal-eyebrow">ACCOUNT ARCHIVE</span><h2 id="modal-title"></h2></div><button type="button" class="icon-button" data-action="close-modal" aria-label="关闭弹窗"><span data-icon="close"></span></button></div><div id="modal-content"></div><p id="form-error" role="alert" hidden></p><div class="modal-footer"><span id="modal-note">保存到本地数据库</span><button type="button" class="button" id="modal-cancel" data-action="close-modal">取消</button><button class="button primary" type="submit" id="modal-submit">保存</button></div></form></dialog>
   <div id="toast" role="status" hidden></div>
 </body>
 </html>

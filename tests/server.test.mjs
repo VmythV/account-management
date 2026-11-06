@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { once } from 'node:events';
 import { request as httpRequest } from 'node:http';
 import { createApp } from '../server.mjs';
+import { TOTP } from 'otpauth';
 
 function rawRequest(url,{method='GET',headers={},body}={}) {
   return new Promise((resolve,reject)=>{
@@ -79,7 +80,7 @@ test('首次本机设置、登录、持久化、退出与重启；只保存哈�
   assert.equal((await r('/api/logout','POST',{})).status,200);assert.equal((await r('/api/archive')).status,401);
 });
 
-test('拒绝跨站写入、不可信 Host、过大请求和密码字段；错误保留数据库内容',async t=>{
+test('拒绝跨站写入、不可信 Host、过大请求和不完整账号；错误保留数据库内容',async t=>{
   const f=await fixture(t),r=f.request;
   assert.equal((await r('/api/setup','POST',{password,confirm:password},{Origin:'https://evil.example'})).status,403);
   await r('/api/setup','POST',{password,confirm:password});
@@ -101,4 +102,58 @@ test('HTTPS 部署必须先初始化；Secure Cookie；登录限流',async t=>{
   assert.equal(response.status,200);assert.match(response.headers.get('set-cookie'),/Secure/);
   for(let i=0;i<10;i++)assert.equal((await r('/api/login','POST',{password:'wrong'})).status,401);
   assert.equal((await r('/api/login','POST',{password})).status,429);
+});
+
+test('HTTP 密码查看必须逐次 2FA；绑定校验访问密码、会话和 CSRF；并发验证码只成功一次',async t=>{
+  const original=Date.now;let now=1_800_000_000_000;Date.now=()=>now;t.after(()=>{Date.now=original;});
+  const f=await fixture(t),r=f.request;
+  assert.equal((await r('/api/security/totp/enrollment','POST',{password})).status,401);
+  const setup=await r('/api/setup','POST',{password,confirm:password});const cookie=setup.headers.get('set-cookie').split(';')[0];
+  assert.equal((await r('/api/security/totp/enrollment','POST',{password:'incorrect'})).status,400);
+  assert.equal((await r('/api/security/totp/enrollment','POST',{password},{Origin:'https://evil.example'})).status,403);
+  const pending=await r('/api/security/totp/enrollment','POST',{password});assert.equal(pending.status,200);
+  assert.match(pending.body.qr,/^data:image\/png;base64,/);
+  const otp=new TOTP({secret:pending.body.secret}),code=()=>otp.generate({timestamp:now});
+  f.setCookie('');await r('/api/login','POST',{password});
+  assert.equal((await r('/api/security/totp/confirm','POST',{code:code()})).status,400,'不能在另一个会话确认');
+  f.setCookie(cookie);
+  assert.equal((await r('/api/security/totp/confirm','POST',{code:code()})).status,200);
+  const input={name:'Secure',identifier:'demo',type:'平台',status:'正常',password:'  sensitive-test-password  '};
+  const created=await r('/api/accounts','POST',input);assert.equal(created.status,201);
+  const path=`/api/accounts/${created.body.id}/password`;
+  const archive=await r('/api/archive');assert.equal(archive.body.security.twoFactorEnabled,true);
+  assert.equal(archive.body.accounts[0].hasPassword,true);
+  assert.equal(JSON.stringify(archive.body).includes(input.password),false);
+  assert.equal(JSON.stringify(archive.body).includes(pending.body.secret),false);
+  assert.equal((await r(path)).status,404);
+  assert.equal((await r(path,'POST',{code:code()},{Origin:'https://evil.example'})).status,403);
+  assert.equal((await r(path,'POST',{code:code()})).status,409);
+  now+=30_000;
+  const both=await Promise.all([r(path,'POST',{code:code()}),r(path,'POST',{code:code()})]);
+  assert.deepEqual(both.map(x=>x.status).sort(),[200,409]);
+  assert.equal(both.find(x=>x.status===200).body.password,input.password);
+  assert.equal(both[0].headers.get('cache-control'),'no-store');
+  await f.restart();await r('/api/login','POST',{password});
+  assert.equal((await r(path,'POST',{code:code()})).status,409,'重启后验证码不能重用');
+  now+=30_000;assert.equal((await r(path,'POST',{code:code()})).body.password,input.password);
+  f.setCookie('');assert.equal((await r(path,'POST',{code:code()})).status,401);
+});
+
+test('绑定超时、取消、错误次数限制持久化；已绑定不能从网页重新绑定',async t=>{
+  const original=Date.now;let now=1_800_000_000_000;Date.now=()=>now;t.after(()=>{Date.now=original;});
+  const f=await fixture(t),r=f.request;await r('/api/setup','POST',{password,confirm:password});
+  let pending=(await r('/api/security/totp/enrollment','POST',{password})).body;
+  now+=10*60_000;
+  assert.equal((await r('/api/security/totp/confirm','POST',{code:new TOTP({secret:pending.secret}).generate({timestamp:now})})).status,400);
+  pending=(await r('/api/security/totp/enrollment','POST',{password})).body;
+  await r('/api/security/totp/enrollment','DELETE',{});
+  assert.equal((await r('/api/security/totp/confirm','POST',{code:new TOTP({secret:pending.secret}).generate({timestamp:now})})).status,400);
+  for(let i=0;i<5;i++)assert.equal((await r('/api/security/totp/enrollment','POST',{password:'bad'})).status,400);
+  await f.restart();await r('/api/login','POST',{password});
+  assert.equal((await r('/api/security/totp/enrollment','POST',{password})).status,429);
+  now+=15*60_000;
+  pending=(await r('/api/security/totp/enrollment','POST',{password})).body;
+  const token=new TOTP({secret:pending.secret}).generate({timestamp:now});
+  assert.equal((await r('/api/security/totp/confirm','POST',{code:token})).status,200);
+  assert.equal((await r('/api/security/totp/enrollment','POST',{password})).status,409);
 });

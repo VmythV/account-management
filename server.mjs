@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { openStore } from './lib/store.mjs';
 import { HttpError, fields } from './lib/validation.mjs';
 import { readAuth, createAuth, verifyPassword } from './lib/auth.mjs';
+import QRCode from 'qrcode';
 
 const root=dirname(fileURLToPath(import.meta.url));
 const loopback = host => ['127.0.0.1','::1','::ffff:127.0.0.1','localhost'].includes(host);
@@ -29,12 +30,13 @@ function readJson(request) {
   });
 }
 
-export function createApp({databasePath,authPath,origin='',allowSetup=false}) {
+export function createApp({databasePath,authPath,keyPath,origin='',allowSetup=false}) {
   if(origin && (new URL(origin).origin!==origin || !origin.startsWith('https://')))throw new Error('APP_ORIGIN 必须是完整 HTTPS 来源地址，不包含路径或末尾斜杠。');
   let auth=readAuth(authPath);
   if(!auth && (!allowSetup||origin))throw new Error('请先以本机模式启动并设置访问密码，再启用服务器部署配置。');
-  const store=openStore(databasePath);
+  const store=openStore(databasePath,{keyPath});
   const sessions=new Map();
+  const enrollments=new Map();
   let attempts=0,attemptUntil=0,hashing=0;
   const cookie=(token,age)=>`archive_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${age}${origin?'; Secure':''}`;
   const assets=new Map();
@@ -59,7 +61,8 @@ export function createApp({databasePath,authPath,origin='',allowSetup=false}) {
       const path=new URL(request.url,expectedOrigin).pathname,method=request.method;
       const token=request.headers.cookie?.split(';').map(v=>v.trim()).find(v=>v.startsWith('archive_session='))?.slice(16);
       const now=Date.now();
-      for(const [key,expires] of sessions)if(expires<=now)sessions.delete(key);
+      for(const [key,expires] of sessions)if(expires<=now){sessions.delete(key);enrollments.delete(key);}
+      for(const [key,pending] of enrollments)if(pending.expires<=now)enrollments.delete(key);
       const authenticated=sessions.has(token);
       if(!['GET','HEAD'].includes(method)){
         if(request.headers['x-requested-with']!=='account-archive'||request.headers.origin!==expectedOrigin||request.headers['sec-fetch-site']==='cross-site')throw new HttpError(403,'请求来源校验失败，请重新打开页面。');
@@ -78,15 +81,41 @@ export function createApp({databasePath,authPath,origin='',allowSetup=false}) {
             auth=await createAuth(authPath,input.password);
           }else if(!auth||!await verifyPassword(auth,input.password))throw new HttpError(401,'密码不正确。');
         }finally{hashing--;}
-        attempts=0;if(token)sessions.delete(token);
+        attempts=0;if(token){sessions.delete(token);enrollments.delete(token);}
         if(sessions.size>=30)sessions.delete(sessions.keys().next().value);
         const session=randomBytes(32).toString('hex');sessions.set(session,Date.now()+sessionLifetime);
         response.setHeader('Set-Cookie',cookie(session,sessionLifetime/1000));return send(200,{ok:true});
       }
       if(path.startsWith('/api/')){
         if(!authenticated)throw new HttpError(401,'登录已过期，请重新登录后重试。');
-        if(path==='/api/logout'&&method==='POST'){sessions.delete(token);response.setHeader('Set-Cookie',cookie('',0));return send(200,{ok:true});}
+        if(path==='/api/logout'&&method==='POST'){sessions.delete(token);enrollments.delete(token);response.setHeader('Set-Cookie',cookie('',0));return send(200,{ok:true});}
         if(path==='/api/archive'&&method==='GET')return send(200,store.archive());
+        if(path==='/api/security/totp/enrollment'&&method==='POST'){
+          const input=await readJson(request);fields(input,['password']);store.vault.checkRate();
+          if(hashing>=2)throw new HttpError(429,'验证请求过于频繁，请稍后重试。');
+          hashing++;
+          try { if(!await verifyPassword(auth,input.password))store.vault.fail('管理工具访问密码不正确。'); }
+          finally { hashing--; }
+          if(!sessions.has(token))throw new HttpError(401,'登录已过期，请重新登录。');
+          const pending={...store.vault.beginEnrollment(),expires:Date.now()+10*60_000};
+          enrollments.set(token,pending);
+          return send(200,{secret:pending.secret,qr:await QRCode.toDataURL(pending.uri,{width:256,margin:4}),expires:pending.expires});
+        }
+        if(path==='/api/security/totp/confirm'&&method==='POST'){
+          const input=await readJson(request);fields(input,['code']);
+          const pending=enrollments.get(token);
+          if(!pending||pending.expires<=Date.now())throw new HttpError(400,'绑定已过期，请重新开始。');
+          store.vault.confirmEnrollment(pending,input.code);enrollments.clear();
+          return send(200,{ok:true});
+        }
+        if(path==='/api/security/totp/enrollment'&&method==='DELETE'){
+          fields(await readJson(request),[]);enrollments.delete(token);return send(200,{ok:true});
+        }
+        const reveal=path.match(/^\/api\/accounts\/([a-f\d-]{36})\/password$/);
+        if(reveal&&method==='POST'){
+          const input=await readJson(request);fields(input,['code']);
+          return send(200,{password:store.vault.reveal(reveal[1],input.code)});
+        }
         const match=path.match(/^\/api\/(accounts|tags|relations|events|subscriptions)(?:\/([a-f\d-]{36}))?(?:\/events(?:\/([a-f\d-]{36}))?)?$/);
         if(!match)throw new HttpError(404,'接口不存在。');
         if(!['POST','PUT','PATCH','DELETE'].includes(method))throw new HttpError(405,'不支持此请求方式。');
@@ -130,7 +159,7 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).hr
     const host=process.env.HOST||'127.0.0.1',port=Number(process.env.PORT||3001),origin=process.env.APP_ORIGIN||'';
     if(!Number.isInteger(port)||port<1||port>65535)throw new Error('PORT 必须为 1–65535。');
     if(!loopback(host)&&!origin)throw new Error('非本机监听必须配置 APP_ORIGIN。');
-    const server=createApp({databasePath:resolve(root,process.env.DATABASE_PATH||'data/accounts.sqlite'),authPath:resolve(root,process.env.AUTH_PATH||'data/access.json'),origin,allowSetup:loopback(host)&&!origin});
+    const server=createApp({databasePath:resolve(root,process.env.DATABASE_PATH||'data/accounts.sqlite'),authPath:resolve(root,process.env.AUTH_PATH||'data/access.json'),keyPath:resolve(root,process.env.VAULT_KEY_PATH||'data/vault.key'),origin,allowSetup:loopback(host)&&!origin});
     server.on('error',error=>{console.error(`启动失败：${error.message}`);process.exitCode=1;server.close();});
     server.listen(port,host,()=>console.log(`归屿已启动：${origin||`http://${host.includes(':')?'['+host+']':host}:${port}`}（首次访问请设置管理密码）`));
     for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{server.close();server.closeIdleConnections();});

@@ -3,11 +3,11 @@ import { $, esc, icon, tagStyle, localDateTime, toast } from './ui.js';
 import { STATUSES } from './timeline.js';
 import { mountSelects, destroySelects } from './selects.js';
 
-let context, busy=false;
+let context, busy=false, sensitiveTimer;
 const nowLocal=()=>localDateTime(new Date());
 function field(label,name,value='',options={}){
   const common=`id="field-${name}" name="${name}" ${options.required?'required':''} ${options.disabled?'disabled':''}`;
-  return `<div class="field"><label for="field-${name}">${label}${options.required?' *':''}</label>${options.textarea?`<textarea ${common} rows="3" maxlength="5000">${esc(value)}</textarea>`:`<input ${common} value="${esc(value)}" type="${options.type||'text'}" maxlength="${options.maxLength||150}" ${options.type==='number'?`min="1" max="${options.max||31}" step="1"`:''} ${options.type==='datetime-local'?`max="${nowLocal()}" step="1"`:''} placeholder="${esc(options.placeholder||'')}">`}${options.help?`<small>${options.help}</small>`:''}</div>`;
+  return `<div class="field"><label for="field-${name}">${label}${options.required?' *':''}</label>${options.textarea?`<textarea ${common} rows="3" maxlength="5000">${esc(value)}</textarea>`:`<input ${common} value="${esc(value)}" type="${options.type||'text'}" maxlength="${options.maxLength||150}" ${options.type==='password'?`autocomplete="${options.autocomplete||'new-password'}"`:''} ${options.code?'inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code"':''} ${options.type==='number'?`min="1" max="${options.max||31}" step="1"`:''} ${options.type==='datetime-local'?`max="${nowLocal()}" step="1"`:''} placeholder="${esc(options.placeholder||'')}">`}${options.help?`<small>${options.help}</small>`:''}</div>`;
 }
 function selectField(label,name,items,value,disabled=false){return `<div class="field"><label for="field-${name}">${label}</label><select id="field-${name}" name="${name}" ${disabled?'disabled':''} ${['account','source','from','to'].includes(name)?'data-search':''}>${items.map(item=>{const[v,l]=Array.isArray(item)?item:[item,item];return `<option value="${esc(v)}" ${v===value?'selected':''}>${esc(l)}</option>`;}).join('')}</select></div>`;}
 const accountOptions=()=>A.accounts.map(a=>[a.id,`${a.name} · ${a.identifier}`]);
@@ -27,7 +27,13 @@ export function openModal(kind,id){
   if(kind==='new-account'||kind==='edit-account'){
     const a=kind==='edit-account'?A.get(id):null;context.record=a;
     title=a?'编辑账号':'新增账号';
-    content=`<p class="modal-description">邮箱、用户名、手机号或任意账号标识都可以。</p><div class="form-grid">${field('服务 / 平台名称','name',a?.name||'',{required:true})}${field('账号类型','type',a?.type||'',{required:true,placeholder:'邮箱、游戏平台、自定义类型…'})}</div>${field('账号标识','identifier',a?.identifier||'',{required:true,maxLength:300,help:'只记录标识，不保存账号密码。'})}${field('网站（选填）','website',a?.website||'',{type:'url',maxLength:2048,placeholder:'https://example.com',help:'填写完整网站地址，保存后可直接打开。'})}<div class="form-grid">${field('注册日期（未知可留空）','created',a?.created||'',{type:'date'})}${selectField('账号状态','status',['正常','已归档'],a?.status||'正常')}</div>${tagsField(a?.tagIds||[])}${field('备注','notes',a?.notes||'',{textarea:true})}${a?'':`<div class="form-divider"><h3>关联已有账号（选填）</h3>${selectField('注册 / 登录来源','source',[['','暂不关联'],...accountOptions()],'')}${field('关联方式','relation','邮箱注册')}</div>`}`;
+    content=`<p class="modal-description">邮箱、用户名、手机号或任意账号标识都可以。</p><div class="form-grid">${field('服务 / 平台名称','name',a?.name||'',{required:true})}${field('账号类型','type',a?.type||'',{required:true,placeholder:'邮箱、游戏平台、自定义类型…'})}</div>${field('账号标识','identifier',a?.identifier||'',{required:true,maxLength:300,help:'账号标识与密码分别保存。'})}${field(a?.hasPassword?'更换密码（选填）':'密码（选填）','password','',{type:'password',maxLength:4096,disabled:!A.security?.twoFactorEnabled,placeholder:a?.hasPassword?'留空保留原密码':'可以不填写',help:A.security?.twoFactorEnabled?'加密保存，每次查看都需要验证器验证码。':'请先到安全设置绑定验证器，之后即可保存密码。'})}${a?.hasPassword?'<label class="password-remove"><input type="checkbox" name="removePassword" value="yes"> 移除已保存的密码</label>':''}${field('网站（选填）','website',a?.website||'',{type:'url',maxLength:2048,placeholder:'https://example.com',help:'填写完整网站地址，保存后可直接打开。'})}<div class="form-grid">${field('注册日期（未知可留空）','created',a?.created||'',{type:'date'})}${selectField('账号状态','status',['正常','已归档'],a?.status||'正常')}</div>${tagsField(a?.tagIds||[])}${field('备注','notes',a?.notes||'',{textarea:true})}${a?'':`<div class="form-divider"><h3>关联已有账号（选填）</h3>${selectField('注册 / 登录来源','source',[['','暂不关联'],...accountOptions()],'')}${field('关联方式','relation','邮箱注册')}</div>`}`;
+  }else if(kind==='bind-totp'){
+    title='绑定验证器';submit='继续绑定';
+    content=`<p class="modal-description">先验证管理工具访问密码，再用验证器 App 扫码绑定。所有账号共用这个验证器。</p>${field('管理工具访问密码','accessPassword','',{type:'password',required:true,maxLength:256,autocomplete:'current-password'})}<p class="hint">不提供恢复码。验证器丢失后，只能通过服务器重置。</p>`;
+  }else if(kind==='reveal-password'){
+    const a=A.get(id);title='验证后查看密码';submit='验证并查看';
+    content=`<p class="modal-description">${esc(a.name)} · ${esc(a.identifier)}</p>${field('验证器验证码','code','',{required:true,maxLength:6,code:true,placeholder:'6 位动态验证码'})}<p class="hint">每次查看都要重新验证。同一个验证码只能使用一次；查看后 30 秒自动隐藏。</p>`;
   }else if(kind==='new-link'||kind==='edit-link'){
     const r=kind==='edit-link'?A.links.find(r=>r.id===id):null;context.record=r;
     title=r?'修改账号关联':'建立账号关联';
@@ -60,6 +66,7 @@ export function openModal(kind,id){
     content='<ol class="help-list"><li>账号支持任意标识，通过标签组合筛选。</li><li>箭头从注册或登录来源指向目标账号。</li><li>每次订阅操作保存独立快照，可补录和更正历史。</li><li>数据保存在运行服务机器的 SQLite 文件中。</li></ol><p class="hint">续费是页面日历提醒，不会自动付款。请勿在备注中填写账号密码或密钥。</p>';
   }
   destroySelects($('#modal-content'));
+  clearTimeout(sensitiveTimer);$('#modal-submit').hidden=false;$('#modal-note').textContent=kind==='reveal-password'?'仅验证本次查看':'保存到本地数据库';$('#modal-cancel').textContent='取消';
   $('#modal-title').textContent=title;$('#modal-content').innerHTML=content;$('#modal-submit').textContent=submit;$('#form-error').hidden=true;
   updateRenewalFields();$('#modal').showModal();mountSelects($('#modal-content'));
 }
@@ -77,12 +84,34 @@ export async function afterMutation(detail={}){
 async function save(form){
   const tags=$('#field-newTags')?.tomselect;
   if(tags?.inputValue())tags.createItem();
-  const fd=new FormData(form),d=Object.fromEntries(fd);for(const key in d)if(typeof d[key]==='string')d[key]=d[key].trim();
+  const fd=new FormData(form),d=Object.fromEntries(fd);for(const key in d)if(typeof d[key]==='string'&&!['password','accessPassword'].includes(key))d[key]=d[key].trim();
   const {kind,id,record}=context;let path,method=id?'PUT':'POST',body;
-  if(kind==='help'){$('#modal').close();return;}
+  if(kind==='help'||kind==='password-visible'){$('#modal').close();return;}
+  if(kind==='bind-totp'){
+    const pending=await api('/api/security/totp/enrollment','POST',{password:d.accessPassword});
+    if(!$('#modal').open||context?.kind!==kind)return;
+    context.kind='confirm-totp';
+    $('#modal-content').innerHTML=`<p class="modal-description">用验证器 App 扫描二维码，然后输入生成的验证码完成绑定。</p><div class="totp-enrollment"><img src="${esc(pending.qr)}" width="256" height="256" alt="验证器绑定二维码"><details><summary>无法扫码？手动输入密钥</summary><code>${esc(pending.secret)}</code></details></div>${field('验证器验证码','code','',{required:true,maxLength:6,code:true,placeholder:'6 位动态验证码'})}<p class="hint">绑定信息 10 分钟内有效。不要分享二维码或密钥。</p>`;
+    $('#modal-submit').textContent='确认绑定';
+    sensitiveTimer=setTimeout(()=>{if(context?.kind==='confirm-totp'){$('#modal').close();toast('绑定已过期，请重新开始。');}},Math.max(0,pending.expires-Date.now()));
+    return;
+  }
+  if(kind==='confirm-totp'){
+    await api('/api/security/totp/confirm','POST',{code:d.code});$('#modal').close();await afterMutation();return;
+  }
+  if(kind==='reveal-password'){
+    const result=await api(`/api/accounts/${id}/password`,'POST',{code:d.code});
+    if(!$('#modal').open||context?.kind!==kind||context?.id!==id||document.hidden){result.password='';return;}
+    context.kind='password-visible';$('#modal-title').textContent='账号密码';
+    $('#modal-content').innerHTML='<p class="hint">30 秒后自动隐藏；关闭窗口、离开页面或切换标签页也会立即隐藏。</p><pre id="revealed-password" class="revealed-password" tabindex="0" aria-label="账号密码"></pre>';
+    $('#revealed-password').textContent=result.password;result.password='';
+    $('#modal-submit').hidden=true;$('#modal-cancel').textContent='隐藏并关闭';$('#modal-note').textContent='再次查看需重新验证';
+    sensitiveTimer=setTimeout(()=>{if(context?.kind==='password-visible')$('#modal').close();},30_000);
+    return;
+  }
   if(['new-account','edit-account'].includes(kind)){
     path='/api/accounts'+(record?'/'+id:'');method=record?'PUT':'POST';
-    body={name:d.name,identifier:d.identifier,type:d.type,created:d.created,status:d.status,notes:d.notes,website:d.website,tagIds:fd.getAll('tagIds'),newTags:fd.getAll('newTags'),...(record?{version:record.version}:{source:d.source,relation:d.relation})};
+    body={name:d.name,identifier:d.identifier,type:d.type,created:d.created,status:d.status,notes:d.notes,website:d.website,...(d.password?{password:d.password}:{}),...(d.removePassword==='yes'?{removePassword:true}:{}),tagIds:fd.getAll('tagIds'),newTags:fd.getAll('newTags'),...(record?{version:record.version}:{source:d.source,relation:d.relation})};
   }else if(['new-tag','edit-tag'].includes(kind)){path='/api/tags'+(record?'/'+id:'');method=record?'PUT':'POST';body={name:d.name,color:d.color,...(record?{version:record.version}:{})};}
   else if(['new-link','edit-link'].includes(kind)){path='/api/relations'+(record?'/'+id:'');method=record?'PUT':'POST';body={from:d.from,to:d.to,type:d.type,notes:d.notes,...(record?{version:record.version}:{})};}
   else if(['new-event','edit-event'].includes(kind)){
@@ -103,7 +132,15 @@ export function bindForms(){
   document.addEventListener('input',e=>{if(e.target.id==='field-color')$('#color-value').textContent=e.target.value.toUpperCase();});
   document.addEventListener('click',e=>{if(e.target.closest('[data-action="close-modal"]')&&!busy)$('#modal').close();});
   $('#modal').addEventListener('cancel',e=>{if(busy)e.preventDefault();});
-  $('#modal').addEventListener('close',()=>destroySelects($('#modal-content')));
+  $('#modal').addEventListener('close',()=>{
+    clearTimeout(sensitiveTimer);destroySelects($('#modal-content'));$('#modal-content').innerHTML='';
+    if(context?.kind==='confirm-totp')api('/api/security/totp/enrollment','DELETE',{}).catch(()=>{});
+    context=null;
+  });
+  const hidePassword=()=>{if(context?.kind==='password-visible'||context?.kind==='reveal-password')$('#modal').close();};
+  document.addEventListener('visibilitychange',()=>{if(document.hidden&&context?.kind==='password-visible')hidePassword();});
+  window.addEventListener('pagehide',()=>$('#modal').close());
+  window.addEventListener('hashchange',()=>$('#modal').close());
   $('#modal-form').addEventListener('submit',async e=>{
     e.preventDefault();if(busy)return;busy=true;$('#modal-submit').disabled=true;$('#form-error').hidden=true;
     try{await save(e.currentTarget);}

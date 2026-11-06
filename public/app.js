@@ -18,7 +18,7 @@ function relatedIds(id){return new Set([...A.related(id,'up'),...A.related(id,'d
 function heading(title,description,actions,eyebrow='YOUR DIGITAL LIFE, CONNECTED'){return `<div class="page-heading"><div><span class="eyebrow">${eyebrow}</span><h1>${title}</h1><p>${description}</p></div><div class="button-row">${actions||''}</div></div>`;}
 function nav(){
   const r=route(), active=r.page==='account'?'accounts':r.page;
-  const items=[['accounts','accounts','账号库',A.accounts.length],['graph','graph','关联图谱',''],['subscriptions','card','订阅管理',A.subscriptions.filter(s=>['订阅中','试用中'].includes(s.status)).length],['records','clock','操作记录',''],['tags','tag','标签管理','']];
+  const items=[['accounts','accounts','账号库',A.accounts.length],['graph','graph','关联图谱',''],['subscriptions','card','订阅管理',A.subscriptions.filter(s=>['订阅中','试用中'].includes(s.status)).length],['records','clock','操作记录',''],['tags','tag','标签管理',''],['security','shield','安全设置','']];
   $('#navigation').innerHTML=items.map(([id,i,name,count])=>`<a href="#${id}" class="nav-item ${active===id?'active':''}" ${active===id?'aria-current="page"':''} title="${name}">${icon(i)}<span>${name}</span><small class="nav-count">${count}</small></a>`).join('');
   $('#sidebar-tags').innerHTML=A.tags.map(t=>`<button class="side-tag ${state.tags.includes(t.name)&&active==='accounts'?'selected':''}" data-action="side-tag" data-tag="${esc(t.name)}"><span class="tag-dot" style="${tagStyle(t.color)}"></span><span>${esc(t.name)}</span><small>${A.accounts.filter(a=>a.tags.includes(t.name)).length}</small></button>`).join('');
   $('#breadcrumb-current').textContent=r.page==='account'?`账号库 / ${A.get(r.id)?.name||'账号详情'}`:items.find(i=>i[0]===active)?.[2]||'账号库';
@@ -47,7 +47,7 @@ function timeline(events,withAccount=false){return events.length?`<div class="ti
 function detailPage(id,tab){
   const a=A.get(id);if(!a)return empty('没有找到这个账号','返回账号库，选择一个已有账号。','go-accounts','返回账号库');
   const subscriptions=A.subscriptions.filter(s=>s.account===id), events=A.events.filter(e=>e.account===id);
-  const info=`<section class="panel"><div class="panel-heading"><h2>账号信息</h2><button class="text-button" data-action="edit-account" data-id="${id}">${icon('edit')} 编辑</button></div><dl class="info-grid"><div><dt>账号标识</dt><dd class="copy-line"><span>${esc(a.identifier)}</span><button class="icon-button" data-action="copy" data-id="${id}" aria-label="复制账号标识">${icon('copy')}</button></dd></div><div><dt>账号类型</dt><dd>${esc(a.type)}</dd></div><div><dt>注册日期</dt><dd>${dateText(a.created)}</dd></div><div><dt>自定义标签</dt><dd><div class="tags">${a.tags.map(tagHTML).join('')||'<span class="muted">未设置</span>'}</div></dd></div><div class="full"><dt>网站</dt><dd>${a.website?`<a class="website-link" href="${esc(a.website)}" target="_blank" rel="noopener noreferrer" aria-label="${esc(a.website)}（在新标签页打开）"><span>${esc(a.website)}</span>${icon('external')}</a>`:'<span class="muted">未设置</span>'}</dd></div><div class="full"><dt>备注</dt><dd>${esc(a.notes||'还没有备注')}</dd></div></dl></section>`;
+  const info=`<section class="panel"><div class="panel-heading"><h2>账号信息</h2><button class="text-button" data-action="edit-account" data-id="${id}">${icon('edit')} 编辑</button></div><dl class="info-grid"><div><dt>账号标识</dt><dd class="copy-line"><span>${esc(a.identifier)}</span><button class="icon-button" data-action="copy" data-id="${id}" aria-label="复制账号标识">${icon('copy')}</button></dd></div><div><dt>账号类型</dt><dd>${esc(a.type)}</dd></div><div><dt>注册日期</dt><dd>${dateText(a.created)}</dd></div><div><dt>自定义标签</dt><dd><div class="tags">${a.tags.map(tagHTML).join('')||'<span class="muted">未设置</span>'}</div></dd></div><div class="full"><dt>密码</dt><dd class="password-summary">${a.hasPassword?`<span aria-label="密码已加密保存">••••••••</span>${A.security?.twoFactorEnabled?btn('验证后查看','reveal-password','soft',id):'<a class="text-button" href="#security">先绑定验证器</a>'}`:'<span class="muted">未保存</span>'}</dd></div><div class="full"><dt>网站</dt><dd>${a.website?`<a class="website-link" href="${esc(a.website)}" target="_blank" rel="noopener noreferrer" aria-label="${esc(a.website)}（在新标签页打开）"><span>${esc(a.website)}</span>${icon('external')}</a>`:'<span class="muted">未设置</span>'}</dd></div><div class="full"><dt>备注</dt><dd>${esc(a.notes||'还没有备注')}</dd></div></dl></section>`;
   const overviewGraph=`<section class="panel"><div class="detail-graph-heading"><div class="button-row"><a class="text-button" href="#account/${id}/links">展开完整链路 ${icon('arrow')}</a></div><h2>账号关联</h2><p>箭头从来源账号，指向使用它注册或登录的账号。</p></div>${graphMarkup(id,'overview')}<div class="relation-summary"><span>上游来源 <strong>${A.related(id,'up').size-1}</strong></span><span>下游账号 <strong>${A.related(id,'down').size-1}</strong></span><span>直接关联 <strong>${linkCount(id)}</strong></span></div></section>`;
   const records=`<section class="panel"><div class="panel-heading"><h2>操作时间线 <span class="muted">${events.length}</span></h2><button class="text-button" data-action="new-event" data-id="${id}">${icon('plus')} 记录操作</button></div>${timeline(events)}</section>`;
   return `<a class="back-link" href="#accounts">${icon('back')} 返回账号库</a><div class="detail-heading"><div class="identity">${serviceIcon(a,'large')}<div><h1>${esc(a.name)}<span class="status-pill">${a.status}</span></h1><span class="identity-caption">${esc(a.identifier)}</span></div></div><div class="button-row">${btn(`${icon('link')} 添加关联`,'new-link','',id)}${btn(`${icon('plus')} 记录操作`,'new-event','primary',id)}</div></div><div class="tabs detail-tabs">${[['overview','概览'],['links','关联链路'],['records','操作记录'],['subscriptions','订阅']].map(([t,label])=>`<a class="tab ${tab===t?'active':''}" href="#account/${id}/${t}" ${tab===t?'aria-current="page"':''}>${label}</a>`).join('')}</div>
@@ -67,7 +67,7 @@ function render(){
   const focused=document.activeElement, focusId=focused?.id, cursor=focused?.selectionStart;
   A.updateTime();
   const r=route();nav();destroyGraphs();destroySelects($('#main'));
-  $('#main').innerHTML=r.page==='account'?detailPage(r.id,r.tab):r.page==='graph'?graphPage():r.page==='subscriptions'?subscriptionsPage():r.page==='records'?recordsPage():r.page==='tags'?tagsPage():accountsPage();
+  $('#main').innerHTML=r.page==='account'?detailPage(r.id,r.tab):r.page==='graph'?graphPage():r.page==='subscriptions'?subscriptionsPage():r.page==='records'?recordsPage():r.page==='tags'?tagsPage():r.page==='security'?securityPage():accountsPage();
   mountGraphs();mountSelects($('#main'));
   if(focusId){
     const input=document.getElementById(focusId);
@@ -81,6 +81,7 @@ function render(){
   }
 }
 function accountSubscriptions(list,id){return `${list.length?list.map(s=>subscriptionDetail(s,id)).join(''):subscriptionDetail(null,id)}${list.length?btn(`${icon('plus')} 再添加一项订阅`,'new-sub','wide',id):''}`;}
+function securityPage(){return `${heading('安全设置','为保存的账号密码，再加一道验证。','', 'ACCOUNT SECURITY')}<section class="panel security-panel"><div class="panel-heading"><h2>验证器 · 双重验证</h2><span class="status-pill">${A.security?.twoFactorEnabled?'已绑定':'未绑定'}</span></div><div class="security-body"><p>${A.security?.twoFactorEnabled?'每次查看账号密码，都需要输入验证器生成的 6 位动态验证码。':'先绑定验证器，即可选择为账号保存密码。支持兼容 TOTP 的验证器 App。'}</p>${A.security?.twoFactorEnabled?'':btn('绑定验证器','bind-totp','primary')}<ul><li>密码加密保存，不会随账号列表加载。</li><li>一个验证码只使用一次，查看后 30 秒自动隐藏。</li><li>不提供恢复码；验证器丢失或需要更换时，请通过服务器重置。</li></ul></div></section>`;}
 function tagsPage(){return `${heading('标签管理','给账号自由分类，名称与颜色随时调整。',btn(`${icon('plus')} 新建标签`,'new-tag','primary'))}<section class="panel tags-manager">${A.tags.map(t=>`<div class="tag-manager-row"><span class="tag" style="${tagStyle(t.color)}">${esc(t.name)}</span><span class="muted">${A.accounts.filter(a=>a.tagIds.includes(t.id)).length} 个账号</span><div class="button-row">${btn('编辑','edit-tag','quiet',t.id)}${btn('删除','delete-tag','quiet danger',t.id)}</div></div>`).join('')||empty('还没有自定义标签','创建标签后，即可在新增或编辑账号时使用。','new-tag','新建标签')}</section>`;}
 
 bindForms();
@@ -89,7 +90,7 @@ document.addEventListener('archive-change',e=>{
   if(e.detail.newAccount){state.query='';state.tags=[];state.status='all';state.selected=e.detail.newAccount;location.hash=`#account/${e.detail.newAccount}/overview`;}
   render();
 });
-const modalActions=['new-account','edit-account','new-link','edit-link','new-event','edit-event','new-sub','edit-sub','edit-sub-event','rename-sub','new-tag','edit-tag','help'];
+const modalActions=['new-account','edit-account','new-link','edit-link','new-event','edit-event','new-sub','edit-sub','edit-sub-event','rename-sub','new-tag','edit-tag','help','bind-totp','reveal-password'];
 document.addEventListener('click',async e=>{
   const el=e.target.closest('[data-action]');if(!el)return;
   const action=el.dataset.action,id=el.dataset.id;
