@@ -65,18 +65,148 @@ sudo /data/service/certbot/program/bin/certbot renew \
 
 加密密钥使用系统随机数生成 32 字节文件，必须在首次启动版本 3 前配置好权限与 `VAULT_KEY_PATH`。已加密数据库不能通过重新生成密钥恢复；数据库备份与对应密钥均需保留，并在不同的受保护位置保存。服务器备份不是异地备份。
 
-丢失或更换验证器时，仅服务器所有者执行下面的重置；操作前先停机并备份数据及对应密钥：
+## 服务器密码恢复与 2FA 重置
+
+本节只供服务器所有者在需要恢复时执行。先区分以下情况，避免重置错误的内容：
+
+| 遇到的问题 | 使用的步骤 | 结果 |
+| --- | --- | --- |
+| 忘记登录管理工具的访问密码 | B：设置新的访问密码 | 仅替换 `data/access.json`，账号数据、已保存密码、验证器绑定不变 |
+| 验证器丢失或需要换手机 | C：重置 2FA | 原验证器失效，重新绑定后才能查看账号密码 |
+| 无法启动，提示加密密钥丢失或不匹配 | D：恢复原加密密钥 | 必须找回与数据库匹配的原密钥，不能生成新密钥代替 |
+| 只是不记得某个网站的账号密码 | 正常登录后在账号详情点击“验证后查看” | 输入验证器验证码查看之前保存的密码；本工具不能重置外部网站密码 |
+
+如果访问密码和验证器同时丢失，先做 B，再做 C，最后统一执行 E。访问密码只保存哈希，无法还原旧密码，只能设置新密码。没有提供恢复码或网页免验证入口。
+
+### A. 登录服务器、停止服务并备份
+
+在自己的电脑打开交互式终端，连接服务器：
 
 ```sh
-sudo systemctl stop account-archive
+ssh -t -F ~/.ssh/server.conf -l temp20261009 server-01
+```
+
+以下命令在服务器执行。备份包含完整数据库、访问密码哈希和环境配置；加密密钥另存至仅 root 可读的 `backups/keys/`。记下输出的备份路径，后续回退要用。
+
+```sh
+sudo bash -s <<'SH'
+set -eu
+umask 077
+systemctl stop account-archive
+archive_backup=$(mktemp -d /data/service/account-archive/backups/recovery-$(date +%Y%m%d-%H%M%S)-XXXXXX)
+cp -a /data/service/account-archive/data "$archive_backup/data"
+cp -a /data/service/account-archive/config/app.env "$archive_backup/app.env"
+if test -f /data/service/account-archive/config/vault.key; then
+  install -d -o root -g root -m 700 /data/service/account-archive/backups/keys
+  archive_key_copy="/data/service/account-archive/backups/keys/$(basename "$archive_backup").key"
+  install -o root -g root -m 600 /data/service/account-archive/config/vault.key "$archive_key_copy"
+  printf '密钥单独备份：%s\n' "$archive_key_copy"
+else
+  printf '当前密钥文件缺失，请按 D 恢复原密钥。\n'
+fi
+printf '数据与配置备份：%s\n' "$archive_backup"
+SH
+```
+
+此时服务保持停止，继续对应的恢复步骤。任何命令失败时先检查错误，不要继续覆盖文件。不要删除数据库或重新生成 `vault.key`。
+
+### B. 忘记管理工具访问密码：设置新密码
+
+完成 A 后，在同一个交互式 SSH 终端执行下面的整段命令。程序会提示输入两次新密码，输入不回显；密码需为 12–256 个字符。不要把密码填写在命令参数、环境变量、聊天消息或脚本文件中。
+
+此操作复用项目的 scrypt 密码哈希实现：先生成新的临时哈希文件，成功后原子替换 `data/access.json`。新密码无效或生成失败时，旧文件保持不变。不需要关闭 HTTPS 或开放初始化接口。
+
+```sh
+cd /data/service/account-archive/program/app
+sudo -u account-archive python3 - <<'PY'
+import getpass
+import subprocess
+import warnings
+
+warnings.simplefilter('error', getpass.GetPassWarning)
+archive_password = getpass.getpass('新的管理工具访问密码：')
+archive_confirm = getpass.getpass('再次输入新密码：')
+if archive_password != archive_confirm:
+    raise SystemExit('两次输入不一致，未修改密码。')
+archive_reset_code = r'''
+import { readFileSync, mkdtempSync, renameSync, rmSync, openSync, fsyncSync, closeSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { createAuth } from './lib/auth.mjs';
+const authPath='/data/service/account-archive/data/access.json';
+const temporary=mkdtempSync(join(dirname(authPath),'.access-reset-'));
+try {
+  const next=join(temporary,'access.json');
+  await createAuth(next,readFileSync(0,'utf8'));
+  const fd=openSync(next,'r');
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+  renameSync(next,authPath);
+  console.log('新的访问密码已保存；请继续执行 E 启动服务。');
+} finally {
+  rmSync(temporary,{recursive:true,force:true});
+}
+'''
+subprocess.run(
+    ['/data/service/account-archive/program/runtime/bin/node',
+     '--input-type=module', '-e', archive_reset_code],
+    input=archive_password.encode('utf-8'), check=True)
+PY
+```
+
+正常完成后执行 E，并用新密码登录。原有 2FA 仍然有效；查看账号密码仍需验证码。若需要撤销此次访问密码重置，停机后把 A 中备份的 `data/access.json` 恢复到 `/data/service/account-archive/data/access.json`，设置为 `account-archive:account-archive`、`0600`，再执行 E；其他数据无需回退。
+
+### C. 验证器丢失：重置 2FA 后重新绑定
+
+完成 A 后执行：
+
+```sh
 cd /data/service/account-archive/program/app
 sudo -u account-archive /data/service/account-archive/program/runtime/bin/node \
   --env-file=/data/service/account-archive/config/app.env \
   scripts/reset-2fa.mjs --confirm-reset
-sudo systemctl start account-archive
 ```
 
-该命令保留密码密文与加密密钥，只清除验证器绑定与验证状态。重新登录并使用访问密码绑定新验证器后，仍需每次输入验证码才能查看密码。不提供恢复码、网页重置或临时免验证模式。
+这个命令只清除验证器绑定及验证状态，保留已保存的密码密文与加密密钥。随后执行 E，使用管理工具访问密码登录，在“安全设置 → 绑定验证器”扫描新二维码并输入验证码确认。
+
+绑定成功后，等待验证器生成下一个验证码，再在账号详情点击“验证后查看”。绑定时使用的验证码已经消耗，不能立即重复使用。重置不会直接显示密码，也不会解除每次查看都需要验证码的要求。
+
+### D. 加密密钥丢失或损坏：恢复原密钥
+
+先完成 A，保留当前数据及仍存在的密钥文件。已确认的首次上线密钥备份为：
+
+`/data/service/account-archive/backups/keys/vault-20261106-121330-8bcb3aa.key`
+
+在密钥从未更换、数据库仍属于本部署的前提下，可恢复该备份；如果后来迁移或更换过密钥，必须选择与当前数据库匹配的备份，不要盲目覆盖。
+
+```sh
+sudo install -o root -g account-archive -m 640 \
+  /data/service/account-archive/backups/keys/vault-20261106-121330-8bcb3aa.key \
+  /data/service/account-archive/config/vault.key
+```
+
+然后执行 E。程序启动时会检查密钥是否匹配；若提示校验失败，保持服务停止，检查备份配对。不要修改数据库中的密钥校验值，不要删除加密表来绕过错误。
+
+**如果原密钥及其所有备份都丢失，已保存的账号密码和验证器密钥无法解密，重置访问密码或 2FA 也无法恢复它们。** 没有保存过的密码，本工具同样无法恢复；只能去对应网站按其流程重置，再重新记录。恢复旧数据库备份会回退备份之后的数据，不能当作普通密码重置使用。
+
+### E. 恢复服务并检查
+
+```sh
+sudo systemctl start account-archive
+sudo systemctl is-active account-archive
+curl -fsS https://account-archive.service.ai-builder.world/api/session
+```
+
+正常应看到服务状态 `active`，接口返回 `{"initialized":true,"authenticated":false}`。这只表示服务和初始化状态正常，仍需在浏览器实际登录、绑定或验证查看密码。
+
+若启动失败，先停止自动重试，再检查日志：
+
+```sh
+sudo systemctl stop account-archive
+sudo journalctl -u account-archive -n 50 --no-pager
+```
+
+常见问题：`access.json` 应为 `account-archive:account-archive`、`0600`；`vault.key` 应为 `root:account-archive`、`0640`，且内容必须是原来的 32 字节密钥；验证码连续失败时检查手机与服务器时间，限流后需等待 15 分钟。不要为了恢复而关闭 HTTPS 或取消验证码校验。
+
+重启会清除旧登录会话。服务器本机备份不等于异地备份，应把数据备份与对应密钥分别存入受保护的异地位置。
 
 ## 更新与回退
 
