@@ -48,11 +48,18 @@ function pageHarness(t){
   return {store,context,elements,modules:context.modules,offline(value){offline=value;},expired(value){expired=value;},async submit(values){await listeners['modal-form:submit']({preventDefault(){},currentTarget:values});},async click(action,id){const button={dataset:{action,id}};for(const fn of listeners.click||[])await fn({target:{closest:selector=>selector==='[data-action]'?button:null}});}};
 }
 
-test('账号库右侧直接编辑指定账号；网站表单保存、回填、链接转义与清空',async t=>{
+test('账号库右侧进入指定账号详情并可编辑；网站表单保存、回填、链接转义与清空',async t=>{
   const h=pageHarness(t),{modules:m,elements:e}=h;
   const first=h.store.saveAccount({name:'第一个账号',identifier:'one',type:'平台',status:'正常'});
   const id=h.store.saveAccount({name:'测试账号',identifier:'two',type:'平台',status:'正常'});
   await m.data.reload();m.app.state.selected=first;m.app.render();
+  assert.ok(e.main.innerHTML.includes(`data-action="view-account" data-id="${id}"`));
+  await h.click('view-account',id);
+  assert.equal(h.context.location.hash,`#account/${id}/overview`);
+  assert.equal(e.modal.open,false,'查看详情不能打开编辑弹窗');
+  assert.equal(m.app.state.selected,first,'点击详情不能触发行预览');
+  m.app.render();assert.match(e.main.innerHTML,/账号信息/);
+  assert.equal(e['breadcrumb-current'].textContent,'账号库 / 测试账号');
   assert.ok(e.main.innerHTML.includes(`data-action="edit-account" data-id="${id}"`));
   await h.click('edit-account',id);
   assert.equal(e.modal.open,true);assert.equal(e['modal-title'].textContent,'编辑账号');
@@ -61,7 +68,7 @@ test('账号库右侧直接编辑指定账号；网站表单保存、回填、�
   const values={name:'测试账号',identifier:'two',type:'平台',created:'',status:'正常',notes:'',website:'https://example.com/login?a=1&b=2',tagIds:[],newTags:[]};
   await h.submit(values);assert.equal(m.data.Archive.get(id).website,values.website);
   await h.click('edit-account',id);assert.match(e['modal-content'].innerHTML,/https:\/\/example.com\/login\?a=1&amp;b=2/);
-  e.modal.close();m.app.state.selected=id;m.app.render();
+  e.modal.close();h.context.location.hash='#accounts';m.app.state.selected=id;m.app.render();
   assert.match(e.main.innerHTML,/访问网站/);
   h.context.location.hash=`#account/${id}/overview`;m.app.render();
   assert.match(e.main.innerHTML,/href="https:\/\/example.com\/login\?a=1&amp;b=2" target="_blank" rel="noopener noreferrer"/);
