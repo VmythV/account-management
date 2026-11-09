@@ -13,6 +13,8 @@
     "reset-2fa": "node --env-file-if-exists=.env scripts/reset-2fa.mjs"
   },
   "dependencies": {
+    "@simplewebauthn/browser": "14.0.0",
+    "@simplewebauthn/server": "14.1.0",
     "otpauth": "9.6.0",
     "qrcode": "1.5.4"
   }

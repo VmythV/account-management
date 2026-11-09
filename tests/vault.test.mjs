@@ -78,9 +78,10 @@ test('错误和过期验证码限流持久化；服务器重置不解密密码�
   for(let i=0;i<4;i++)assert.throws(()=>f.store.vault.reveal(id,'invalid'),{status:400});
   f.restart();assert.throws(()=>f.store.vault.reveal(id,code()),{status:429});
   f.advance(15*60_000);assert.equal(f.store.vault.reveal(id,code()),'keep-encrypted');
+  f.store.vault.savePasskey({id:'test-credential',publicKey:Buffer.from('public'),counter:0},Buffer.from('user'),f.store.vault.generation());
   let out;f.restart(()=>{out=execFileSync(process.execPath,['scripts/reset-2fa.mjs','--confirm-reset'],{env:{...process.env,DATABASE_PATH:f.path},encoding:'utf8'});});
   assert.match(out,/保持加密/);
-  assert.equal(f.store.vault.enabled(),false);
+  assert.equal(f.store.vault.enabled(),false);assert.equal(f.store.vault.passkey(),undefined);
   assert.throws(()=>f.store.vault.reveal(id,code()),{status:403});
   assert.throws(()=>f.store.vault.confirmEnrollment(pending,code()),{status:409});
   const rebound=f.bind();f.advance();assert.equal(f.store.vault.reveal(id,rebound.code()),'keep-encrypted');
@@ -88,6 +89,20 @@ test('错误和过期验证码限流持久化；服务器重置不解密密码�
 
 test('版本 2 升级只新增密码表；原有数据保留且默认无密码、未绑定',t=>{
   const f=fixture(t);f.store.saveAccount(account());const before=JSON.stringify(f.store.archive());
-  f.restart(()=>{const db=new DatabaseSync(f.path);db.exec('DROP TABLE account_secrets; DROP TABLE vault_settings; PRAGMA user_version=2;');db.close();});
+  f.restart(()=>{const db=new DatabaseSync(f.path);db.exec('DROP TABLE account_secrets; DROP TABLE vault_settings; DROP TABLE passkey_credentials; PRAGMA user_version=2;');db.close();});
   assert.equal(JSON.stringify(f.store.archive()),before);
+});
+
+
+test('版本 3 升级保留原密文、TOTP、已消耗验证码和账号记录',t=>{
+  const f=fixture(t),{code}=f.bind();const id=f.store.saveAccount(account({password:'migration-secret'}));
+  f.advance();assert.equal(f.store.vault.reveal(id,code()),'migration-secret');
+  const archive=JSON.stringify(f.store.archive());let state,secrets;
+  f.restart(()=>{
+    const db=new DatabaseSync(f.path);state=db.prepare('SELECT * FROM vault_settings').all();secrets=db.prepare('SELECT * FROM account_secrets').all();
+    db.exec('DROP TABLE passkey_credentials; PRAGMA user_version=3;');db.close();
+  });
+  const db=new DatabaseSync(f.path);assert.deepEqual(db.prepare('SELECT * FROM vault_settings').all(),state);assert.deepEqual(db.prepare('SELECT * FROM account_secrets').all(),secrets);db.close();
+  assert.equal(JSON.stringify(f.store.archive()),archive);assert.throws(()=>f.store.vault.reveal(id,code()),{status:409});
+  f.advance();assert.equal(f.store.vault.reveal(id,code()),'migration-secret');
 });

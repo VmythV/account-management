@@ -7,6 +7,7 @@ import { openStore } from './lib/store.mjs';
 import { HttpError, fields } from './lib/validation.mjs';
 import { readAuth, createAuth, verifyPassword } from './lib/auth.mjs';
 import QRCode from 'qrcode';
+import { createPasskeys } from './lib/passkeys.mjs';
 
 const root=dirname(fileURLToPath(import.meta.url));
 const loopback = host => ['127.0.0.1','::1','::ffff:127.0.0.1','localhost'].includes(host);
@@ -37,9 +38,12 @@ export function createApp({databasePath,authPath,keyPath,origin='',allowSetup=fa
   const store=openStore(databasePath,{keyPath});
   const sessions=new Map();
   const enrollments=new Map();
+  const sessionActive=token=>(sessions.get(token)||0)>Date.now();
+  const passkeys=createPasskeys(store.vault,sessionActive);
   let attempts=0,attemptUntil=0,hashing=0;
   const cookie=(token,age)=>`archive_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${age}${origin?'; Secure':''}`;
   const assets=new Map();
+  assets.set('/vendor/simplewebauthn.min.js',{body:readFileSync(resolve(root,'node_modules/@simplewebauthn/browser/dist/bundle/index.umd.min.js')),type:'text/javascript; charset=utf-8',public:false});
   for(const name of ['index.html','login.html','styles.css','login.js','app.js','ui.js','data.js','forms.js','graphs.js','timeline.js','selects.js','vendor/cytoscape.min.js','vendor/cytoscape-dagre.js','vendor/tom-select.complete.min.js','vendor/tom-select.css']){
     const type=name.endsWith('.html')?'text/html; charset=utf-8':name.endsWith('.css')?'text/css; charset=utf-8':'text/javascript; charset=utf-8';
     assets.set('/'+name,{body:readFileSync(resolve(root,'public',name)),type,public:['login.html','login.js','styles.css'].includes(name)});
@@ -61,7 +65,7 @@ export function createApp({databasePath,authPath,keyPath,origin='',allowSetup=fa
       const path=new URL(request.url,expectedOrigin).pathname,method=request.method;
       const token=request.headers.cookie?.split(';').map(v=>v.trim()).find(v=>v.startsWith('archive_session='))?.slice(16);
       const now=Date.now();
-      for(const [key,expires] of sessions)if(expires<=now){sessions.delete(key);enrollments.delete(key);}
+      for(const [key,expires] of sessions)if(expires<=now){sessions.delete(key);enrollments.delete(key);passkeys.cancel(key);}
       for(const [key,pending] of enrollments)if(pending.expires<=now)enrollments.delete(key);
       const authenticated=sessions.has(token);
       if(!['GET','HEAD'].includes(method)){
@@ -81,22 +85,27 @@ export function createApp({databasePath,authPath,keyPath,origin='',allowSetup=fa
             auth=await createAuth(authPath,input.password);
           }else if(!auth||!await verifyPassword(auth,input.password))throw new HttpError(401,'密码不正确。');
         }finally{hashing--;}
-        attempts=0;if(token){sessions.delete(token);enrollments.delete(token);}
-        if(sessions.size>=30)sessions.delete(sessions.keys().next().value);
+        attempts=0;if(token){sessions.delete(token);enrollments.delete(token);passkeys.cancel(token);}
+        if(sessions.size>=30){const oldest=sessions.keys().next().value;sessions.delete(oldest);enrollments.delete(oldest);passkeys.cancel(oldest);}
         const session=randomBytes(32).toString('hex');sessions.set(session,Date.now()+sessionLifetime);
         response.setHeader('Set-Cookie',cookie(session,sessionLifetime/1000));return send(200,{ok:true});
       }
       if(path.startsWith('/api/')){
         if(!authenticated)throw new HttpError(401,'登录已过期，请重新登录后重试。');
-        if(path==='/api/logout'&&method==='POST'){sessions.delete(token);enrollments.delete(token);response.setHeader('Set-Cookie',cookie('',0));return send(200,{ok:true});}
+        if(path==='/api/logout'&&method==='POST'){sessions.delete(token);enrollments.delete(token);passkeys.cancel(token);response.setHeader('Set-Cookie',cookie('',0));return send(200,{ok:true});}
         if(path==='/api/archive'&&method==='GET')return send(200,store.archive());
-        if(path==='/api/security/totp/enrollment'&&method==='POST'){
-          const input=await readJson(request);fields(input,['password']);store.vault.checkRate();
+        if(path==='/api/security/totp/enrollment'&&method==='POST'||path==='/api/security/passkey/registration/options'&&method==='POST'||path==='/api/security/passkey'&&method==='DELETE'){
+          const input=await readJson(request),isPasskey=path.includes('/passkey');fields(input,isPasskey?['password','code']:['password']);store.vault.checkRate();
           if(hashing>=2)throw new HttpError(429,'验证请求过于频繁，请稍后重试。');
           hashing++;
           try { if(!await verifyPassword(auth,input.password))store.vault.fail('管理工具访问密码不正确。'); }
           finally { hashing--; }
-          if(!sessions.has(token))throw new HttpError(401,'登录已过期，请重新登录。');
+          if(!sessionActive(token))throw new HttpError(401,'登录已过期，请重新登录。');
+          if(isPasskey){
+            store.vault.verifyTotp(input.code);
+            if(method==='DELETE'){store.vault.removePasskey();passkeys.cancel(token);return send(200,{ok:true});}
+            return send(200,await passkeys.registrationOptions(token,expectedOrigin));
+          }
           const pending={...store.vault.beginEnrollment(),expires:Date.now()+10*60_000};
           enrollments.set(token,pending);
           return send(200,{secret:pending.secret,qr:await QRCode.toDataURL(pending.uri,{width:256,margin:4}),expires:pending.expires});
@@ -110,6 +119,18 @@ export function createApp({databasePath,authPath,keyPath,origin='',allowSetup=fa
         }
         if(path==='/api/security/totp/enrollment'&&method==='DELETE'){
           fields(await readJson(request),[]);enrollments.delete(token);return send(200,{ok:true});
+        }
+        if(path==='/api/security/passkey/challenge'&&method==='DELETE'){
+          fields(await readJson(request),[]);passkeys.cancel(token);return send(200,{ok:true});
+        }
+        if(path==='/api/security/passkey/registration/verify'&&method==='POST'){
+          const input=await readJson(request);fields(input,['response']);await passkeys.register(token,expectedOrigin,input.response);return send(200,{ok:true});
+        }
+        const passkeyReveal=path.match(/^\/api\/accounts\/([a-f\d-]{36})\/password\/passkey\/(options|verify)$/);
+        if(passkeyReveal&&method==='POST'){
+          const input=await readJson(request),[,account,action]=passkeyReveal;
+          fields(input,action==='options'?[]:['response']);
+          return send(200,action==='options'?await passkeys.authenticationOptions(token,expectedOrigin,account):{password:await passkeys.reveal(token,expectedOrigin,account,input.response)});
         }
         const reveal=path.match(/^\/api\/accounts\/([a-f\d-]{36})\/password$/);
         if(reveal&&method==='POST'){

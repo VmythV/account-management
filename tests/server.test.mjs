@@ -7,6 +7,7 @@ import { once } from 'node:events';
 import { request as httpRequest } from 'node:http';
 import { createApp } from '../server.mjs';
 import { TOTP } from 'otpauth';
+import { authenticator } from './helpers/authenticator.mjs';
 
 function rawRequest(url,{method='GET',headers={},body}={}) {
   return new Promise((resolve,reject)=>{
@@ -31,7 +32,7 @@ async function fixture(t,extra={}){
     const setCookie=response.headers.get('set-cookie');if(setCookie)cookie=setCookie.split(';')[0];
     const text=response.text;return {status:response.status,headers:response.headers,body:response.headers.get('content-type')?.includes('json')?JSON.parse(text):text};
   }
-  return {config,request,async restart(){await stop();await start();},setCookie(value){cookie=value;}};
+  return {config,request,get origin(){return base;},async restart(){await stop();await start();},setCookie(value){cookie=value;}};
 }
 const password='test-only-password-123';
 test('HTTP 完整写入：账号、标签、关联、记录和订阅历史',async t=>{
@@ -156,4 +157,46 @@ test('绑定超时、取消、错误次数限制持久化；已绑定不能从�
   const token=new TOTP({secret:pending.secret}).generate({timestamp:now});
   assert.equal((await r('/api/security/totp/confirm','POST',{code:token})).status,200);
   assert.equal((await r('/api/security/totp/enrollment','POST',{password})).status,409);
+});
+
+
+test('HTTP 通行密钥注册、逐次解锁、2FA 备用、撤销；会话来源检查与重启持久化',async t=>{
+  const oldNow=Date.now;let now=1_800_000_000_000;Date.now=()=>now;t.after(()=>{Date.now=oldNow;});
+  const f=await fixture(t),r=f.request,device=authenticator(),registration='/api/security/passkey/registration';
+  assert.equal((await r(registration+'/options','POST',{password,code:'123456'})).status,401);
+  await r('/api/setup','POST',{password,confirm:password});
+  assert.equal((await r('/vendor/simplewebauthn.min.js')).status,200);
+  const p=(await r('/api/security/totp/enrollment','POST',{password})).body,otp=new TOTP({secret:p.secret}),code=()=>otp.generate({timestamp:now});
+  await r('/api/security/totp/confirm','POST',{code:code()});
+  const id=(await r('/api/accounts','POST',{name:'Site',identifier:'me',type:'平台',status:'正常',password:'http-secret'})).body.id;
+  const path=`/api/accounts/${id}/password`;
+  assert.equal((await r(registration+'/options','POST',{password,code:code()})).status,409);
+  now+=30000;
+  assert.equal((await r(registration+'/options','POST',{password:'wrong',code:code()})).status,400);
+  assert.equal((await r(registration+'/options','POST',{password,code:'bad'})).status,400);
+  assert.equal((await r(registration+'/options','POST',{password,code:code()},{Origin:'https://evil.example'})).status,403);
+  let o=(await r(registration+'/options','POST',{password,code:code()})).body;
+  assert.equal(o.rp.id,'127.0.0.1');assert.equal(o.authenticatorSelection.userVerification,'required');
+  let response=device.register(o,f.origin);
+  assert.equal((await r(registration+'/verify','POST',{response})).status,200);
+  assert.equal((await r(registration+'/verify','POST',{response})).status,400);
+  const archive=(await r('/api/archive')).body;assert.equal(archive.security.passkeyEnabled,true);assert.equal(JSON.stringify(archive).includes(response.id),false);
+  o=(await r(path+'/passkey/options','POST',{})).body;response=device.authenticate(o,f.origin);
+  const both=await Promise.all([r(path+'/passkey/verify','POST',{response}),r(path+'/passkey/verify','POST',{response})]);
+  assert.deepEqual(both.map(x=>x.status).sort(),[200,400]);assert.equal(both.find(x=>x.status===200).body.password,'http-secret');
+  assert.equal(both[0].headers.get('cache-control'),'no-store');
+  now+=30000;assert.equal((await r(path,'POST',{code:code()})).body.password,'http-secret');
+  o=(await r(path+'/passkey/options','POST',{})).body;response=device.authenticate(o,f.origin);
+  await r('/api/security/passkey/challenge','DELETE',{});assert.equal((await r(path+'/passkey/verify','POST',{response})).status,400);
+  o=(await r(path+'/passkey/options','POST',{})).body;response=device.authenticate(o,f.origin);
+  await r('/api/logout','POST',{});assert.equal((await r(path+'/passkey/verify','POST',{response})).status,401);
+  await r('/api/login','POST',{password});assert.equal((await r(path+'/passkey/verify','POST',{response})).status,400);
+  await f.restart();await r('/api/login','POST',{password});
+  assert.equal((await r('/api/archive')).body.security.passkeyEnabled,true);
+  o=(await r(path+'/passkey/options','POST',{})).body;response=device.authenticate(o,f.origin);
+  assert.equal((await r(path+'/passkey/verify','POST',{response})).body.password,'http-secret');
+  assert.equal((await r('/api/security/passkey','DELETE',{password,code:code()})).status,409);
+  now+=30000;assert.equal((await r('/api/security/passkey','DELETE',{password,code:code()})).status,200);
+  assert.equal((await r(path+'/passkey/options','POST',{})).status,409);
+  now+=30000;assert.equal((await r(path,'POST',{code:code()})).body.password,'http-secret');
 });

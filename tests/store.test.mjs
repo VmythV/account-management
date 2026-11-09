@@ -34,12 +34,12 @@ test('版本 1 数据库升级后保留账号、标签、关联、记录和订�
   s.createSubscription({account:b,name:'套餐',...event()});
   const before=JSON.parse(JSON.stringify(s.archive()));s.close();
   const legacy=new DatabaseSync(path);
-  legacy.exec('ALTER TABLE accounts DROP COLUMN website; DROP TABLE account_secrets; DROP TABLE vault_settings; PRAGMA user_version=1;');legacy.close();
+  legacy.exec('ALTER TABLE accounts DROP COLUMN website; DROP TABLE account_secrets; DROP TABLE vault_settings; DROP TABLE passkey_credentials; PRAGMA user_version=1;');legacy.close();
   s=openStore(path);assert.deepEqual(JSON.parse(JSON.stringify(s.archive())),before);
   s.saveAccount(account({website:'https://example.com',version:1}),a);s.close();
   s=openStore(path);assert.equal(s.archive().accounts.find(x=>x.id===a).website,'https://example.com/');s.close();
   const db=new DatabaseSync(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version,3);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version,4);
   assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check,'ok');db.close();
 });
 
@@ -64,7 +64,7 @@ test('账号与任意颜色标签持久化；改名同步；删除标签保留�
 test('创建账号附带标签和关联全部提交或全部回滚；拒绝未启用 2FA 的密码和错误日期',t=>{
   const s=memory(t);
   assert.throws(()=>s.saveAccount(account({newTags:['不应留下'],source:'missing',relation:'注册'})),{status:404});
-  assert.deepEqual(s.archive(),{accounts:[],tags:[],links:[],events:[],subscriptions:[],security:{twoFactorEnabled:false}});
+  assert.deepEqual(s.archive(),{accounts:[],tags:[],links:[],events:[],subscriptions:[],security:{twoFactorEnabled:false,passkeyEnabled:false}});
   for(const input of [{created:'2025-02-29'},{tagIds:'invalid'},{newTags:['a,b']},{identifier:''}])assert.throws(()=>s.saveAccount(account(input)),{status:400});
   assert.throws(()=>s.saveAccount(account({password:'not-allowed'})),{status:403});
   s.saveAccount(account());assert.throws(()=>s.saveAccount(account({name:'github'})),{status:409});

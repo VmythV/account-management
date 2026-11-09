@@ -5,6 +5,8 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { openStore } from '../lib/store.mjs';
 import { TOTP } from 'otpauth';
+import { createPasskeys } from '../lib/passkeys.mjs';
+import { authenticator } from './helpers/authenticator.mjs';
 import * as timeline from '../public/timeline.js';
 
 function pageHarness(t){
@@ -14,6 +16,7 @@ function pageHarness(t){
     elements[id]={querySelectorAll:()=>[],innerHTML:'',textContent:'',hidden:true,open:false,addEventListener(type,fn){listeners[id+':'+type]=fn;},showModal(){this.open=true;},close(){this.open=false;listeners[id+':close']?.();}};
   }
   let offline=false,expired=false;
+  const keys=createPasskeys(store.vault,()=>!expired),origin='https://accounts.example.com';
   const context=vm.createContext({modules:{timeline},console,Date,URL,Set,Map,JSON,setTimeout(fn,ms){timers.set(++timerId,{fn,ms});return timerId;},clearTimeout(id){timers.delete(id);},setInterval(){},
     location:{hash:'#accounts'},window:{addEventListener(type,fn){(windowListeners[type]??=[]).push(fn);},scrollTo(){}},
     document:{hidden:false,activeElement:null,querySelector:s=>elements[s.slice(1)]||null,querySelectorAll:()=>[],getElementById:id=>elements[id],addEventListener(type,fn){(listeners[type]??=[]).push(fn);},dispatchEvent(e){for(const fn of listeners[e.type]||[])fn(e);}},
@@ -27,10 +30,17 @@ function pageHarness(t){
         const input=opts.body?JSON.parse(opts.body):{},parts=path.split('/'),resource=parts[2],id=parts[3];
         if(resource==='archive')result=store.archive();
         else if(resource==='security'){
-          if(parts[4]==='confirm'){store.vault.confirmEnrollment(pending,input.code);result={ok:true};}
+          if(parts[3]==='passkey'){
+            if(parts[4]==='challenge'){keys.cancel('session');result={ok:true};}
+            else if(opts.method==='DELETE'){store.vault.verifyTotp(input.code);store.vault.removePasskey();result={ok:true};}
+            else if(parts[5]==='options'){store.vault.verifyTotp(input.code);result=await keys.registrationOptions('session',origin);}
+            else {await keys.register('session',origin,input.response);result={ok:true};}
+          }
+          else if(parts[4]==='confirm'){store.vault.confirmEnrollment(pending,input.code);result={ok:true};}
           else if(opts.method==='DELETE'){pending=null;result={ok:true};}
           else {pending=store.vault.beginEnrollment();result={secret:pending.secret,qr:'data:image/png;base64,TEST',expires:Date.now()+600000};}
         }
+        else if(resource==='accounts'&&parts[5]==='passkey')result=parts[6]==='options'?await keys.authenticationOptions('session',origin,id):{password:await keys.reveal('session',origin,id,input.response)};
         else if(resource==='accounts')result=parts[4]==='password'?{password:store.vault.reveal(id,input.code)}:{id:store.saveAccount(input,id)};
         else if(resource==='tags')result={id:store.saveTag(input,id)};
         else if(resource==='relations')result={id:store.saveRelation(input,id)};
@@ -51,7 +61,7 @@ function pageHarness(t){
   load('selects','','mountSelects,destroySelects');
   load('forms','const {Archive:A,api,reload}=modules.data;const {$,esc,icon,tagStyle,localDateTime,toast}=modules.ui;const {STATUSES}=modules.timeline;const {mountSelects,destroySelects}=modules.selects;','openModal,bindForms,afterMutation');
   load('app','const {Archive:A,api,reload}=modules.data;const {$,icon,esc,serviceIcon,tagStyle,localDateTime,toast}=modules.ui;const {graphData,graphMarkup,destroyGraphs,mountGraphs}=modules.graphs;const {openModal,bindForms,afterMutation}=modules.forms;const {formatDuration}=modules.timeline;const {mountSelects,destroySelects}=modules.selects;','render,state');
-  return {store,context,elements,runTimer(ms){for(const [id,timer] of timers)if(timer.ms===ms){timers.delete(id);timer.fn();}},windowEvent(type){for(const fn of windowListeners[type]||[])fn();},modules:context.modules,offline(value){offline=value;},expired(value){expired=value;},async submit(values){await listeners['modal-form:submit']({preventDefault(){},currentTarget:values});},async clickElement(selector,element){for(const fn of listeners.click||[])await fn({target:{closest:s=>s===selector?element:null}});},async click(action,id){const button={dataset:{action,id}};for(const fn of listeners.click||[])await fn({target:{closest:selector=>selector==='[data-action]'?button:null}});}};
+  return {store,keys,origin,context,elements,runTimer(ms){for(const [id,timer] of timers)if(timer.ms===ms){timers.delete(id);timer.fn();}},windowEvent(type){for(const fn of windowListeners[type]||[])fn();},modules:context.modules,offline(value){offline=value;},expired(value){expired=value;},async submit(values){await listeners['modal-form:submit']({preventDefault(){},currentTarget:values});},async clickElement(selector,element){for(const fn of listeners.click||[])await fn({target:{closest:s=>s===selector?element:null}});},async click(action,id){const button={dataset:{action,id}};for(const fn of listeners.click||[])await fn({target:{closest:selector=>selector==='[data-action]'?button:null}});}};
 }
 
 test('账号库右侧进入指定账号详情并可编辑；网站表单保存、回填、链接转义与清空',async t=>{
@@ -226,4 +236,32 @@ test('正式组件在多来源和循环关系中布局；关联表单与账号�
   cy.layout(JSON.parse(JSON.stringify(m.graphs.graphLayout(false)))).run();assert.equal(cy.nodes().length,3);
   assert.ok(cy.nodes().every(n=>Number.isFinite(n.position().x)));cy.destroy();
   h.context.location.hash=`#account/${b}/links`;m.app.render();assert.match(h.elements.main.innerHTML,/编辑关联/);assert.match(h.elements.main.innerHTML,/解除关联/);
+});
+
+
+test('默认系统验证；每次重新验证、取消后 2FA 备用、关闭弹窗丢弃迟到的验证',async t=>{
+  const oldNow=Date.now;let now=1_800_000_000_000;Date.now=()=>now;t.after(()=>{Date.now=oldNow;});
+  const h=pageHarness(t),{modules:m,elements:e}=h,device=authenticator();
+  const pending=h.store.vault.beginEnrollment(),otp=new TOTP({secret:pending.secret}),code=()=>otp.generate({timestamp:now});
+  h.store.vault.confirmEnrollment(pending,code());now+=30000;
+  let assertions=0,cancelled=0;
+  h.context.window.SimpleWebAuthnBrowser={browserSupportsWebAuthn:()=>true,WebAuthnAbortService:{cancelCeremony(){cancelled++;}},
+    startRegistration:async({optionsJSON})=>device.register(optionsJSON,h.origin),
+    startAuthentication:async({optionsJSON})=>{assertions++;return device.authenticate(optionsJSON,h.origin);}};
+  await m.data.reload();m.forms.bindForms();m.forms.openModal('bind-passkey');await h.submit({accessPassword:'test-access-password',code:code()});
+  assert.equal(e.modal.open,false);assert.equal(m.data.Archive.security.passkeyEnabled,true);
+  const id=h.store.saveAccount({name:'Site',identifier:'me',type:'平台',status:'正常',password:'frontend-passkey-secret'});await m.data.reload();
+  m.forms.openModal('reveal-password',id);assert.equal(e['modal-submit'].textContent,'Touch ID / 系统验证');assert.match(e['modal-content'].innerHTML,/data-use-totp/);assert.doesNotMatch(e['modal-content'].innerHTML,/name="code"/);
+  await h.submit({});assert.equal(e['revealed-password'].textContent,'frontend-passkey-secret');h.runTimer(30000);assert.equal(e.modal.open,false);
+  m.forms.openModal('reveal-password',id);await h.submit({});assert.equal(assertions,2);e.modal.close();
+  h.context.window.SimpleWebAuthnBrowser.startAuthentication=async()=>{throw new Error('NotAllowedError');};
+  m.forms.openModal('reveal-password',id);await h.submit({});assert.match(e['form-error'].textContent,/2FA/);
+  await h.clickElement('[data-use-totp]',{});assert.match(e['modal-content'].innerHTML,/name="code"/);assert.equal(e['form-error'].hidden,true);
+  now+=30000;await h.submit({code:code()});assert.equal(e['revealed-password'].textContent,'frontend-passkey-secret');e.modal.close();
+  let finish,started;const ready=new Promise(resolve=>{started=resolve;});
+  h.context.window.SimpleWebAuthnBrowser.startAuthentication=({optionsJSON})=>new Promise(resolve=>{finish=()=>resolve(device.authenticate(optionsJSON,h.origin));started();});
+  m.forms.openModal('reveal-password',id);const submitting=h.submit({});await ready;e.modal.close();finish();await submitting;
+  assert.equal(e['modal-content'].innerHTML,'');assert.equal(e['form-error'].hidden,true);assert.ok(cancelled>0);
+  h.context.window.SimpleWebAuthnBrowser.browserSupportsWebAuthn=()=>false;
+  m.forms.openModal('reveal-password',id);assert.equal(e['modal-submit'].textContent,'验证并查看');assert.match(e['modal-content'].innerHTML,/name="code"/);
 });

@@ -5,6 +5,22 @@ import { mountSelects, destroySelects } from './selects.js';
 
 let context, busy=false, sensitiveTimer;
 const nowLocal=()=>localDateTime(new Date());
+const codeField=()=>field('验证器验证码','code','',{required:true,maxLength:6,code:true,placeholder:'6 位动态验证码'});
+const isCurrent=value=>context===value&&$('#modal').open&&!document.hidden;
+const passkeyPending=()=>context?.kind==='bind-passkey'||context?.kind==='reveal-password';
+function cancelPasskey(){
+  window.SimpleWebAuthnBrowser?.WebAuthnAbortService.cancelCeremony();
+  api('/api/security/passkey/challenge','DELETE',{}).catch(()=>{});
+}
+async function systemVerify(method,optionsJSON){
+  try{return await window.SimpleWebAuthnBrowser[method]({optionsJSON});}
+  catch{throw new Error(method==='startAuthentication'?'系统验证未完成。可以重试，或选择下方的“使用 2FA 验证码”。':'通行密钥绑定未完成。请检查系统设置后，使用新的 2FA 验证码重试。');}
+}
+function revealFields(current){
+  const a=A.get(current.id);
+  return `<p class="modal-description">${esc(a.name)} · ${esc(a.identifier)}</p>${current.usePasskey?`<div class="passkey-prompt">${icon('shield')}<h3>使用 Touch ID / 系统验证</h3><p>点击下方按钮，按照系统提示完成验证。</p><button type="button" class="text-button" data-use-totp>使用 2FA 验证码</button></div>`:codeField()}<p class="hint">每次查看都要重新验证；查看后 30 秒自动隐藏。${current.usePasskey?'系统可能允许设备密码或其他通行密钥方式。':'同一个验证码只能使用一次。'}</p>`;
+}
+
 function field(label,name,value='',options={}){
   const common=`id="field-${name}" name="${name}" ${options.required?'required':''} ${options.disabled?'disabled':''}`;
   const input=options.textarea?`<textarea ${common} rows="3" maxlength="5000">${esc(value)}</textarea>`:`<input ${common} value="${esc(value)}" type="${options.type||'text'}" maxlength="${options.maxLength||150}" ${options.type==='password'?`autocomplete="${options.autocomplete||'new-password'}"`:''} ${options.code?'inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code"':''} ${options.type==='number'?`min="1" max="${options.max||31}" step="1"`:''} ${options.type==='datetime-local'?`max="${nowLocal()}" step="1"`:''} placeholder="${esc(options.placeholder||'')}">`;
@@ -29,13 +45,17 @@ export function openModal(kind,id){
   if(kind==='new-account'||kind==='edit-account'){
     const a=kind==='edit-account'?A.get(id):null;context.record=a;
     title=a?'编辑账号':'新增账号';
-    content=`<p class="modal-description">邮箱、用户名、手机号或任意账号标识都可以。</p><div class="form-grid">${field('服务 / 平台名称','name',a?.name||'',{required:true})}${field('账号类型','type',a?.type||'',{required:true,placeholder:'邮箱、游戏平台、自定义类型…'})}</div>${field('账号标识','identifier',a?.identifier||'',{required:true,maxLength:300,help:'账号标识与密码分别保存。'})}${field(a?.hasPassword?'更换密码（选填）':'密码（选填）','password','',{type:'password',maxLength:4096,disabled:!A.security?.twoFactorEnabled,placeholder:a?.hasPassword?'留空保留原密码':'可以不填写',help:A.security?.twoFactorEnabled?'加密保存，每次查看都需要验证器验证码。':'请先到安全设置绑定验证器，之后即可保存密码。'})}${a?.hasPassword?'<label class="password-remove"><input type="checkbox" name="removePassword" value="yes"> 移除已保存的密码</label>':''}${field('网站（选填）','website',a?.website||'',{type:'url',maxLength:2048,placeholder:'https://example.com',help:'填写完整网站地址，保存后可直接打开。'})}<div class="form-grid">${field('注册日期（未知可留空）','created',a?.created||'',{type:'date'})}${selectField('账号状态','status',['正常','已归档'],a?.status||'正常')}</div>${tagsField(a?.tagIds||[])}${field('备注','notes',a?.notes||'',{textarea:true})}${a?'':`<div class="form-divider"><h3>关联已有账号（选填）</h3>${selectField('注册 / 登录来源','source',[['','暂不关联'],...accountOptions()],'')}${field('关联方式','relation','邮箱注册')}</div>`}`;
+    content=`<p class="modal-description">邮箱、用户名、手机号或任意账号标识都可以。</p><div class="form-grid">${field('服务 / 平台名称','name',a?.name||'',{required:true})}${field('账号类型','type',a?.type||'',{required:true,placeholder:'邮箱、游戏平台、自定义类型…'})}</div>${field('账号标识','identifier',a?.identifier||'',{required:true,maxLength:300,help:'账号标识与密码分别保存。'})}${field(a?.hasPassword?'更换密码（选填）':'密码（选填）','password','',{type:'password',maxLength:4096,disabled:!A.security?.twoFactorEnabled,placeholder:a?.hasPassword?'留空保留原密码':'可以不填写',help:A.security?.twoFactorEnabled?'加密保存，每次查看都需系统验证或 2FA 验证码。':'请先到安全设置绑定验证器，之后即可保存密码。'})}${a?.hasPassword?'<label class="password-remove"><input type="checkbox" name="removePassword" value="yes"> 移除已保存的密码</label>':''}${field('网站（选填）','website',a?.website||'',{type:'url',maxLength:2048,placeholder:'https://example.com',help:'填写完整网站地址，保存后可直接打开。'})}<div class="form-grid">${field('注册日期（未知可留空）','created',a?.created||'',{type:'date'})}${selectField('账号状态','status',['正常','已归档'],a?.status||'正常')}</div>${tagsField(a?.tagIds||[])}${field('备注','notes',a?.notes||'',{textarea:true})}${a?'':`<div class="form-divider"><h3>关联已有账号（选填）</h3>${selectField('注册 / 登录来源','source',[['','暂不关联'],...accountOptions()],'')}${field('关联方式','relation','邮箱注册')}</div>`}`;
   }else if(kind==='bind-totp'){
     title='绑定验证器';submit='继续绑定';
     content=`<p class="modal-description">先验证管理工具访问密码，再用验证器 App 扫码绑定。所有账号共用这个验证器。</p>${field('管理工具访问密码','accessPassword','',{type:'password',required:true,maxLength:256,autocomplete:'current-password'})}<p class="hint">不提供恢复码。验证器丢失后，只能通过服务器重置。</p>`;
+  }else if(kind==='bind-passkey'||kind==='remove-passkey'){
+    title=kind==='remove-passkey'?'移除通行密钥':A.security?.passkeyEnabled?'更换通行密钥':'绑定通行密钥';submit=kind==='remove-passkey'?'验证并移除':'验证并绑定';
+    content=`<p class="modal-description">${kind==='remove-passkey'?'移除后仍可通过 2FA 验证码查看密码。':'验证访问密码和 2FA 后，由系统创建通行密钥。更换成功后，旧通行密钥失效。'}</p>${field('管理工具访问密码','accessPassword','',{type:'password',required:true,maxLength:256,autocomplete:'current-password'})}${codeField()}<p class="hint">绑定或移除都会消耗本次验证码。系统可能使用 Touch ID 或设备密码。</p>`;
   }else if(kind==='reveal-password'){
-    const a=A.get(id);title='验证后查看密码';submit='验证并查看';
-    content=`<p class="modal-description">${esc(a.name)} · ${esc(a.identifier)}</p>${field('验证器验证码','code','',{required:true,maxLength:6,code:true,placeholder:'6 位动态验证码'})}<p class="hint">每次查看都要重新验证。同一个验证码只能使用一次；查看后 30 秒自动隐藏。</p>`;
+    context.usePasskey=!!A.security?.passkeyEnabled&&!!window.SimpleWebAuthnBrowser?.browserSupportsWebAuthn();
+    title='验证后查看密码';submit=context.usePasskey?'Touch ID / 系统验证':'验证并查看';content=revealFields(context);
+
   }else if(kind==='new-link'||kind==='edit-link'){
     const r=kind==='edit-link'?A.links.find(r=>r.id===id):null;context.record=r;
     title=r?'修改账号关联':'建立账号关联';
@@ -101,9 +121,29 @@ async function save(form){
   if(kind==='confirm-totp'){
     await api('/api/security/totp/confirm','POST',{code:d.code});$('#modal').close();await afterMutation();return;
   }
+  if(kind==='bind-passkey'||kind==='remove-passkey'){
+    const current=context;
+    if(kind==='remove-passkey')await api('/api/security/passkey','DELETE',{password:d.accessPassword,code:d.code});
+    else {
+      if(!window.SimpleWebAuthnBrowser?.browserSupportsWebAuthn())throw new Error('此浏览器不支持通行密钥，请使用支持的浏览器。');
+      const optionsJSON=await api('/api/security/passkey/registration/options','POST',{password:d.accessPassword,code:d.code});
+      if(!isCurrent(current)){cancelPasskey();return;}
+      const response=await systemVerify('startRegistration',optionsJSON);
+      if(!isCurrent(current))return;
+      await api('/api/security/passkey/registration/verify','POST',{response});
+    }
+    if(isCurrent(current))$('#modal').close();await afterMutation();return;
+  }
   if(kind==='reveal-password'){
-    const result=await api(`/api/accounts/${id}/password`,'POST',{code:d.code});
-    if(!$('#modal').open||context?.kind!==kind||context?.id!==id||document.hidden){result.password='';return;}
+    const current=context,method=current.usePasskey;let result;
+    if(method){
+      const optionsJSON=await api(`/api/accounts/${id}/password/passkey/options`,'POST',{});
+      if(!isCurrent(current)||!current.usePasskey){cancelPasskey();return;}
+      const response=await systemVerify('startAuthentication',optionsJSON);
+      if(!isCurrent(current)||!current.usePasskey){cancelPasskey();return;}
+      result=await api(`/api/accounts/${id}/password/passkey/verify`,'POST',{response});
+    }else result=await api(`/api/accounts/${id}/password`,'POST',{code:d.code});
+    if(!isCurrent(current)||current.usePasskey!==method){result.password='';return;}
     context.kind='password-visible';$('#modal-title').textContent='账号密码';
     $('#modal-content').innerHTML='<p class="hint">30 秒后自动隐藏；关闭窗口、离开页面或切换标签页也会立即隐藏。</p><pre id="revealed-password" class="revealed-password" tabindex="0" aria-label="账号密码"></pre>';
     $('#revealed-password').textContent=result.password;result.password='';
@@ -140,22 +180,27 @@ export function bindForms(){
       toggle.setAttribute('aria-pressed',String(visible));
       toggle.setAttribute('aria-label',`${visible?'隐藏':'显示'}正在填写的密码`);
     }
-    if(e.target.closest('[data-action="close-modal"]')&&!busy)$('#modal').close();
+    if(e.target.closest('[data-use-totp]')&&context?.kind==='reveal-password'){
+      cancelPasskey();context.usePasskey=false;$('#modal-content').innerHTML=revealFields(context);$('#modal-submit').textContent='验证并查看';$('#form-error').hidden=true;
+    }
+    if(e.target.closest('[data-action="close-modal"]')&&(!busy||passkeyPending()))$('#modal').close();
   });
-  $('#modal').addEventListener('cancel',e=>{if(busy)e.preventDefault();});
+  $('#modal').addEventListener('cancel',e=>{if(busy&&!passkeyPending())e.preventDefault();});
   $('#modal').addEventListener('close',()=>{
+    if(passkeyPending())cancelPasskey();
     clearTimeout(sensitiveTimer);destroySelects($('#modal-content'));$('#modal-content').innerHTML='';
     if(context?.kind==='confirm-totp')api('/api/security/totp/enrollment','DELETE',{}).catch(()=>{});
     context=null;
   });
-  const hidePassword=()=>{if(context?.kind==='password-visible'||context?.kind==='reveal-password')$('#modal').close();};
-  document.addEventListener('visibilitychange',()=>{if(document.hidden&&context?.kind==='password-visible')hidePassword();});
+  document.addEventListener('visibilitychange',()=>{if(document.hidden&&(context?.kind==='password-visible'||passkeyPending()))$('#modal').close();});
   window.addEventListener('pagehide',()=>$('#modal').close());
   window.addEventListener('hashchange',()=>$('#modal').close());
   $('#modal-form').addEventListener('submit',async e=>{
     e.preventDefault();if(busy)return;busy=true;$('#modal-submit').disabled=true;$('#form-error').hidden=true;
+    const current=context,usePasskey=current?.usePasskey;
     try{await save(e.currentTarget);}
     catch(error){
+      if(!isCurrent(current)||current.usePasskey!==usePasskey)return;
       $('#form-error').textContent=error.message;
       if(error.status===401)$('#form-error').innerHTML+=` <a class="text-button" href="/login?reauth=1" target="_blank" rel="noopener">在新标签页重新登录</a>，然后返回这里再次保存。`;
       $('#form-error').hidden=false;

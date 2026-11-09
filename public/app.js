@@ -81,7 +81,7 @@ function render(){
   }
 }
 function accountSubscriptions(list,id){return `${list.length?list.map(s=>subscriptionDetail(s,id)).join(''):subscriptionDetail(null,id)}${list.length?btn(`${icon('plus')} 再添加一项订阅`,'new-sub','wide',id):''}`;}
-function securityPage(){return `${heading('安全设置','为保存的账号密码，再加一道验证。','', 'ACCOUNT SECURITY')}<section class="panel security-panel"><div class="panel-heading"><h2>验证器 · 双重验证</h2><span class="status-pill">${A.security?.twoFactorEnabled?'已绑定':'未绑定'}</span></div><div class="security-body"><p>${A.security?.twoFactorEnabled?'每次查看账号密码，都需要输入验证器生成的 6 位动态验证码。':'先绑定验证器，即可选择为账号保存密码。支持兼容 TOTP 的验证器 App。'}</p>${A.security?.twoFactorEnabled?'':btn('绑定验证器','bind-totp','primary')}<ul><li>密码加密保存，不会随账号列表加载。</li><li>一个验证码只使用一次，查看后 30 秒自动隐藏。</li><li>不提供恢复码；验证器丢失或需要更换时，请通过服务器重置。</li></ul></div></section>`;}
+function securityPage(){return `${heading('安全设置','为保存的账号密码，再加一道验证。','', 'ACCOUNT SECURITY')}<section class="panel security-panel"><div class="panel-heading"><h2>验证器 · 双重验证</h2><span class="status-pill">${A.security?.twoFactorEnabled?'已绑定':'未绑定'}</span></div><div class="security-body"><p>${A.security?.twoFactorEnabled?'可以使用验证器生成的 6 位动态验证码，逐次验证后查看账号密码。':'先绑定验证器，即可选择为账号保存密码。支持兼容 TOTP 的验证器 App。'}</p>${A.security?.twoFactorEnabled?'':btn('绑定验证器','bind-totp','primary')}<ul><li>密码加密保存，不会随账号列表加载。</li><li>一个验证码只使用一次，查看后 30 秒自动隐藏。</li><li>不提供恢复码；验证器丢失或需要更换时，请通过服务器重置。</li></ul></div></section><section class="panel security-panel"><div class="panel-heading"><h2>Touch ID / 系统验证</h2><span class="status-pill">${A.security?.passkeyEnabled?'已绑定':'未绑定'}</span></div><div class="security-body"><p>绑定通行密钥后，优先通过 Mac 的 Touch ID 或系统验证查看密码，也可以随时选择 2FA 验证码。</p><div class="security-actions">${A.security?.twoFactorEnabled?btn(A.security?.passkeyEnabled?'更换通行密钥':'绑定通行密钥','bind-passkey','primary'):'<p class="hint">请先绑定上方的验证器，保留备用验证方式。</p>'}${A.security?.passkeyEnabled?btn('移除通行密钥','remove-passkey','soft'):''}</div><ul><li>每次查看都需要新的系统验证，不会持续解锁。</li><li>指纹由设备验证，本站只保存通行密钥公钥。</li><li>系统可能允许设备密码或同步的通行密钥；本站无法限定只能使用指纹。</li></ul></div></section>`;}
 function tagsPage(){return `${heading('标签管理','给账号自由分类，名称与颜色随时调整。',btn(`${icon('plus')} 新建标签`,'new-tag','primary'))}<section class="panel tags-manager">${A.tags.map(t=>`<div class="tag-manager-row"><span class="tag" style="${tagStyle(t.color)}">${esc(t.name)}</span><span class="muted">${A.accounts.filter(a=>a.tagIds.includes(t.id)).length} 个账号</span><div class="button-row">${btn('编辑','edit-tag','quiet',t.id)}${btn('删除','delete-tag','quiet danger',t.id)}</div></div>`).join('')||empty('还没有自定义标签','创建标签后，即可在新增或编辑账号时使用。','new-tag','新建标签')}</section>`;}
 
 bindForms();
@@ -90,7 +90,7 @@ document.addEventListener('archive-change',e=>{
   if(e.detail.newAccount){state.query='';state.tags=[];state.status='all';state.selected=e.detail.newAccount;location.hash=`#account/${e.detail.newAccount}/overview`;}
   render();
 });
-const modalActions=['new-account','edit-account','new-link','edit-link','new-event','edit-event','new-sub','edit-sub','edit-sub-event','rename-sub','new-tag','edit-tag','help','bind-totp','reveal-password'];
+const modalActions=['new-account','edit-account','new-link','edit-link','new-event','edit-event','new-sub','edit-sub','edit-sub-event','rename-sub','new-tag','edit-tag','help','bind-totp','reveal-password','bind-passkey','remove-passkey'];
 document.addEventListener('click',async e=>{
   const el=e.target.closest('[data-action]');if(!el)return;
   const action=el.dataset.action,id=el.dataset.id;
