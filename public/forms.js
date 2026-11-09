@@ -45,7 +45,7 @@ export function openModal(kind,id){
   if(kind==='new-account'||kind==='edit-account'){
     const a=kind==='edit-account'?A.get(id):null;context.record=a;
     title=a?'编辑账号':'新增账号';
-    content=`<p class="modal-description">邮箱、用户名、手机号或任意账号标识都可以。</p><div class="form-grid">${field('服务 / 平台名称','name',a?.name||'',{required:true})}${field('账号类型','type',a?.type||'',{required:true,placeholder:'邮箱、游戏平台、自定义类型…'})}</div>${field('账号标识','identifier',a?.identifier||'',{required:true,maxLength:300,help:'账号标识与密码分别保存。'})}${field(a?.hasPassword?'更换密码（选填）':'密码（选填）','password','',{type:'password',maxLength:4096,disabled:!A.security?.twoFactorEnabled,placeholder:a?.hasPassword?'留空保留原密码':'可以不填写',help:A.security?.twoFactorEnabled?'加密保存，每次查看都需系统验证或 2FA 验证码。':'请先到安全设置绑定验证器，之后即可保存密码。'})}${a?.hasPassword?'<label class="password-remove"><input type="checkbox" name="removePassword" value="yes"> 移除已保存的密码</label>':''}${field('网站（选填）','website',a?.website||'',{type:'url',maxLength:2048,placeholder:'https://example.com',help:'填写完整网站地址，保存后可直接打开。'})}<div class="form-grid">${field('注册日期（未知可留空）','created',a?.created||'',{type:'date'})}${selectField('账号状态','status',['正常','已归档'],a?.status||'正常')}</div>${tagsField(a?.tagIds||[])}${field('备注','notes',a?.notes||'',{textarea:true})}${a?'':`<div class="form-divider"><h3>关联已有账号（选填）</h3>${selectField('注册 / 登录来源','source',[['','暂不关联'],...accountOptions()],'')}${field('关联方式','relation','邮箱注册')}</div>`}`;
+    content=`<p class="modal-description">邮箱、用户名、手机号或任意账号标识都可以。</p><div class="form-grid">${field('服务 / 平台名称','name',a?.name||'',{required:true})}${field('账号类型','type',a?.type||'',{required:true,placeholder:'邮箱、游戏平台、自定义类型…'})}</div>${field('账号标识','identifier',a?.identifier||'',{required:true,maxLength:300})}${field(a?.hasPassword?'更换密码（选填）':'密码（选填）','password','',{type:'password',maxLength:4096,disabled:!A.security?.twoFactorEnabled,placeholder:a?.hasPassword?'留空保留原密码':'可以不填写',help:A.security?.twoFactorEnabled?(a?.hasPassword?'留空保留原密码。':''):'请先到安全设置绑定验证器，之后即可保存密码。'})}${a?.hasPassword?'<label class="password-remove"><input type="checkbox" name="removePassword" value="yes"> 移除已保存的密码</label>':''}${field('网站（选填）','website',a?.website||'',{type:'url',maxLength:2048,placeholder:'https://example.com'})}<div class="form-grid">${field('注册日期（未知可留空）','created',a?.created||'',{type:'date'})}${selectField('账号状态','status',['正常','已归档'],a?.status||'正常')}</div>${tagsField(a?.tagIds||[])}${field('备注','notes',a?.notes||'',{textarea:true})}${a?'':`<div class="form-divider"><h3>关联已有账号（选填）</h3>${selectField('注册 / 登录来源','source',[['','暂不关联'],...accountOptions()],'')}${field('关联方式','relation','邮箱注册')}</div>`}`;
   }else if(kind==='bind-totp'){
     title='绑定验证器';submit='继续绑定';
     content=`<p class="modal-description">先验证管理工具访问密码，再用验证器 App 扫码绑定。所有账号共用这个验证器。</p>${field('管理工具访问密码','accessPassword','',{type:'password',required:true,maxLength:256,autocomplete:'current-password'})}<p class="hint">不提供恢复码。验证器丢失后，只能通过服务器重置。</p>`;
@@ -85,10 +85,10 @@ export function openModal(kind,id){
     if(kind==='edit-sub')content=content.replace(`value="${localDateTime(s.current.occurredAt)}"`,`value="${nowLocal()}"`);
   }else{
     title='使用归屿';submit='知道了';
-    content='<ol class="help-list"><li>账号支持任意标识，通过标签组合筛选。</li><li>箭头从注册或登录来源指向目标账号。</li><li>每次订阅操作保存独立快照，可补录和更正历史。</li><li>数据保存在运行服务机器的 SQLite 文件中。</li></ol><p class="hint">续费是页面日历提醒，不会自动付款。请勿在备注中填写账号密码或密钥。</p>';
+    content='<ol class="help-list"><li>账号支持任意标识，通过标签组合筛选。</li><li>箭头从注册或登录来源指向目标账号。</li><li>每次订阅操作保存独立快照，可补录和更正历史。</li><li>保存的账号密码需通过系统验证或 2FA 查看。</li></ol><p class="hint">续费是页面日历提醒，不会自动付款。请勿在备注中填写账号密码或密钥。</p>';
   }
   destroySelects($('#modal-content'));
-  clearTimeout(sensitiveTimer);$('#modal-submit').hidden=false;$('#modal-note').textContent=kind==='reveal-password'?'仅验证本次查看':'保存到本地数据库';$('#modal-cancel').textContent='取消';
+  clearTimeout(sensitiveTimer);$('#modal-submit').hidden=false;$('#modal-note').textContent=kind==='reveal-password'?'仅验证本次查看':'';$('#modal-cancel').textContent='取消';
   $('#modal-title').textContent=title;$('#modal-content').innerHTML=content;$('#modal-submit').textContent=submit;$('#form-error').hidden=true;
   updateRenewalFields();$('#modal').showModal();mountSelects($('#modal-content'));
 }

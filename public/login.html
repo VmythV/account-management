@@ -1,14 +1,13 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>归屿 · 访问我的档案</title><link rel="stylesheet" href="/styles.css"><script type="module" src="/login.js"></script></head>
 <body class="login-page"><main class="login-card">
-  <a class="brand" href="/"><span class="brand-symbol">g<span></span></span><span>归屿<small>ACCOUNT ARCHIVE</small></span></a>
-  <span class="eyebrow">YOUR PRIVATE ARCHIVE</span><h1 id="login-title">访问我的档案</h1>
-  <p class="login-description" id="login-description">正在连接本地档案…</p>
+  <a class="brand" href="/"><span class="brand-symbol">g<span></span></span><span>归屿<small>账号档案</small></span></a>
+  <h1 id="login-title">访问我的档案</h1>
+  <p class="login-description" id="login-description">正在连接…</p>
   <form id="login-form" hidden>
     <div class="field"><label for="password">管理工具访问密码</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256" autofocus></div>
     <div class="field" id="confirm-field" hidden><label for="confirm">再次输入密码</label><input id="confirm" name="confirm" type="password" autocomplete="new-password" maxlength="256"></div>
     <p class="login-error" id="login-error" role="alert" hidden></p><button class="button primary wide" id="login-submit">进入档案</button>
   </form>
   <p id="login-success" hidden>已登录。可以返回原来的页面，继续保存尚未提交的内容。<br><a class="text-button" href="/">打开账号档案 →</a></p>
-  <p class="login-footnote">账号密码可选加密保存，每次查看都需验证器验证码。<br>管理工具的访问密码仅保存哈希。</p>
 </main></body></html>
