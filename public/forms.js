@@ -46,6 +46,10 @@ export function openModal(kind,id){
     const a=kind==='edit-account'?A.get(id):null;context.record=a;
     title=a?'编辑账号':'新增账号';
     content=`<p class="modal-description">邮箱、用户名、手机号或任意账号标识都可以。</p><div class="form-grid">${field('服务 / 平台名称','name',a?.name||'',{required:true})}${field('账号类型','type',a?.type||'',{required:true,placeholder:'邮箱、游戏平台、自定义类型…'})}</div>${field('账号标识','identifier',a?.identifier||'',{required:true,maxLength:300})}${field(a?.hasPassword?'更换密码（选填）':'密码（选填）','password','',{type:'password',maxLength:4096,disabled:!A.security?.twoFactorEnabled,placeholder:a?.hasPassword?'留空保留原密码':'可以不填写',help:A.security?.twoFactorEnabled?(a?.hasPassword?'留空保留原密码。':''):'请先到安全设置绑定验证器，之后即可保存密码。'})}${a?.hasPassword?'<label class="password-remove"><input type="checkbox" name="removePassword" value="yes"> 移除已保存的密码</label>':''}${field('网站（选填）','website',a?.website||'',{type:'url',maxLength:2048,placeholder:'https://example.com'})}<div class="form-grid">${field('注册日期（未知可留空）','created',a?.created||'',{type:'date'})}${selectField('账号状态','status',['正常','已归档'],a?.status||'正常')}</div>${tagsField(a?.tagIds||[])}${field('备注','notes',a?.notes||'',{textarea:true})}${a?'':`<div class="form-divider"><h3>关联已有账号（选填）</h3>${selectField('注册 / 登录来源','source',[['','暂不关联'],...accountOptions()],'')}${field('关联方式','relation','邮箱注册')}</div>`}`;
+  }else if(kind==='delete-account'){
+    const a=A.get(id);if(!a){toast('账号不存在，请刷新数据。');return;}context.record=a;
+    title='删除账号';submit='确认删除';
+    content=`<p class="modal-description">${esc(a.name)} · ${esc(a.identifier)}</p><p>确定永久删除这个账号？</p><ul class="help-list"><li>删除已保存的密码、订阅及其历史、账号操作记录。</li><li>解除与其他账号的关联；其他账号及自定义标签保留。</li></ul><p class="danger">此操作无法撤销。</p>`;
   }else if(kind==='bind-totp'){
     title='绑定验证器';submit='继续绑定';
     content=`<p class="modal-description">先验证管理工具访问密码，再用验证器 App 扫码绑定。所有账号共用这个验证器。</p>${field('管理工具访问密码','accessPassword','',{type:'password',required:true,maxLength:256,autocomplete:'current-password'})}<p class="hint">不提供恢复码。验证器丢失后，只能通过服务器重置。</p>`;
@@ -90,7 +94,9 @@ export function openModal(kind,id){
   destroySelects($('#modal-content'));
   clearTimeout(sensitiveTimer);$('#modal-submit').hidden=false;$('#modal-note').textContent=kind==='reveal-password'?'仅验证本次查看':'';$('#modal-cancel').textContent='取消';
   $('#modal-title').textContent=title;$('#modal-content').innerHTML=content;$('#modal-submit').textContent=submit;$('#form-error').hidden=true;
+  $('#modal-submit').className=kind==='delete-account'?'button destructive':'button primary';
   updateRenewalFields();$('#modal').showModal();mountSelects($('#modal-content'));
+  if(kind==='delete-account')$('#modal-cancel').focus();
 }
 function updateRenewalFields(){
   const cycle=$('#field-renewalCycle');if(!cycle)return;
@@ -100,8 +106,8 @@ function updateRenewalFields(){
   }
 }
 export async function afterMutation(detail={}){
-  try{await reload();document.dispatchEvent(new CustomEvent('archive-change',{detail}));toast('已保存');}
-  catch(error){toast('变更已保存，但重新读取失败。请点击“刷新数据”，不要重复提交。');}
+  try{await reload();document.dispatchEvent(new CustomEvent('archive-change',{detail}));toast(detail.deletedAccount?'已删除账号':'已保存');}
+  catch(error){toast('操作已完成，但重新读取失败。请点击“刷新数据”，不要重复提交。');}
 }
 async function save(form){
   const tags=$('#field-newTags')?.tomselect;
@@ -151,7 +157,9 @@ async function save(form){
     sensitiveTimer=setTimeout(()=>{if(context?.kind==='password-visible')$('#modal').close();},30_000);
     return;
   }
-  if(['new-account','edit-account'].includes(kind)){
+  if(kind==='delete-account'){
+    path='/api/accounts/'+id;method='DELETE';body={version:record.version};
+  }else if(['new-account','edit-account'].includes(kind)){
     path='/api/accounts'+(record?'/'+id:'');method=record?'PUT':'POST';
     body={name:d.name,identifier:d.identifier,type:d.type,created:d.created,status:d.status,notes:d.notes,website:d.website,...(d.password?{password:d.password}:{}),...(d.removePassword==='yes'?{removePassword:true}:{}),tagIds:fd.getAll('tagIds'),newTags:fd.getAll('newTags'),...(record?{version:record.version}:{source:d.source,relation:d.relation})};
   }else if(['new-tag','edit-tag'].includes(kind)){path='/api/tags'+(record?'/'+id:'');method=record?'PUT':'POST';body={name:d.name,color:d.color,...(record?{version:record.version}:{})};}
@@ -167,7 +175,7 @@ async function save(form){
     else{path=`/api/subscriptions/${record.id}/events`+(context.event?'/'+id:'');method=context.event?'PUT':'POST';body.version=record.version;}
   }
   const result=await api(path,method,body);$('#modal').close();
-  await afterMutation(kind==='new-account'?{newAccount:result.id}:{});
+  await afterMutation(kind==='new-account'?{newAccount:result.id}:kind==='delete-account'?{deletedAccount:id}:{});
 }
 export function bindForms(){
   document.addEventListener('change',e=>{if(e.target.id==='field-renewalCycle')updateRenewalFields();});

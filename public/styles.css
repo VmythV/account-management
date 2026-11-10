@@ -66,6 +66,8 @@
 .tag-manager-row>.button-row{margin-left:auto}
 .tag-manager-row .tag{font-size:var(--font-caption)}
 .danger{color:#9b3d36}
+.button.destructive{background:#9b3d36;border-color:#9b3d36;color:#fff}
+.button.destructive:hover{background:#84322d;border-color:#84322d}
 .relation-item{border-bottom:1px solid var(--line);padding:15px 0}
 .relation-item:last-child{border:0}
 .relation-item .chain-row{padding:0;border:0}

@@ -13,7 +13,7 @@ function pageHarness(t){
   const store=openStore(':memory:');t.after(()=>store.close());
   const listeners={},elements={},timers=new Map(),windowListeners={};let timerId=0,pending;
   for(const id of ['main','navigation','sidebar-tags','breadcrumb-current','toast','modal','modal-form','modal-title','modal-content','modal-submit','form-error','reauth-link','modal-note','modal-cancel','revealed-password']){
-    elements[id]={querySelectorAll:()=>[],innerHTML:'',textContent:'',hidden:true,open:false,addEventListener(type,fn){listeners[id+':'+type]=fn;},showModal(){this.open=true;},close(){this.open=false;listeners[id+':close']?.();}};
+    elements[id]={querySelectorAll:()=>[],innerHTML:'',textContent:'',hidden:true,open:false,focus(){this.focused=true;},addEventListener(type,fn){listeners[id+':'+type]=fn;},showModal(){this.open=true;},close(){this.open=false;listeners[id+':close']?.();}};
   }
   let offline=false,expired=false;
   const keys=createPasskeys(store.vault,()=>!expired),origin='https://accounts.example.com';
@@ -41,6 +41,7 @@ function pageHarness(t){
           else {pending=store.vault.beginEnrollment();result={secret:pending.secret,qr:'data:image/png;base64,TEST',expires:Date.now()+600000};}
         }
         else if(resource==='accounts'&&parts[5]==='passkey')result=parts[6]==='options'?await keys.authenticationOptions('session',origin,id):{password:await keys.reveal('session',origin,id,input.response)};
+        else if(resource==='accounts'&&opts.method==='DELETE'){store.deleteAccount(id,input);result={ok:true};}
         else if(resource==='accounts')result=parts[4]==='password'?{password:store.vault.reveal(id,input.code)}:{id:store.saveAccount(input,id)};
         else if(resource==='tags')result={id:store.saveTag(input,id)};
         else if(resource==='relations')result={id:store.saveRelation(input,id)};
@@ -61,7 +62,7 @@ function pageHarness(t){
   load('selects','','mountSelects,destroySelects');
   load('forms','const {Archive:A,api,reload}=modules.data;const {$,esc,icon,tagStyle,localDateTime,toast}=modules.ui;const {STATUSES}=modules.timeline;const {mountSelects,destroySelects}=modules.selects;','openModal,bindForms,afterMutation');
   load('app','const {Archive:A,api,reload}=modules.data;const {$,icon,esc,serviceIcon,tagStyle,localDateTime,toast}=modules.ui;const {graphData,graphMarkup,destroyGraphs,mountGraphs}=modules.graphs;const {openModal,bindForms,afterMutation}=modules.forms;const {formatDuration}=modules.timeline;const {mountSelects,destroySelects}=modules.selects;','render,state');
-  return {store,keys,origin,context,elements,runTimer(ms){for(const [id,timer] of timers)if(timer.ms===ms){timers.delete(id);timer.fn();}},windowEvent(type){for(const fn of windowListeners[type]||[])fn();},modules:context.modules,offline(value){offline=value;},expired(value){expired=value;},async submit(values){await listeners['modal-form:submit']({preventDefault(){},currentTarget:values});},async clickElement(selector,element){for(const fn of listeners.click||[])await fn({target:{closest:s=>s===selector?element:null}});},async click(action,id){const button={dataset:{action,id}};for(const fn of listeners.click||[])await fn({target:{closest:selector=>selector==='[data-action]'?button:null}});}};
+  return {store,keys,origin,context,elements,runTimer(ms){for(const [id,timer] of timers)if(timer.ms===ms){timers.delete(id);timer.fn();}},windowEvent(type){for(const fn of windowListeners[type]||[])fn();},modules:context.modules,offline(value){offline=value;},expired(value){expired=value;},async submit(values){await listeners['modal-form:submit']({preventDefault(){},currentTarget:values});},async clickElement(selector,element){for(const fn of listeners.click||[])await fn({target:{closest:s=>s===selector?element:null}});},async click(action,id){const button={dataset:{action,id}};for(const fn of listeners.click||[])await fn({target:{closest:selector=>selector==='[data-action]'||selector===`[data-action="${action}"]`?button:null}});}};
 }
 
 test('账号库右侧进入指定账号详情并可编辑；网站表单保存、回填、链接转义与清空',async t=>{
@@ -264,4 +265,33 @@ test('默认系统验证；每次重新验证、取消后 2FA 备用、关闭弹
   assert.equal(e['modal-content'].innerHTML,'');assert.equal(e['form-error'].hidden,true);assert.ok(cancelled>0);
   h.context.window.SimpleWebAuthnBrowser.browserSupportsWebAuthn=()=>false;
   m.forms.openModal('reveal-password',id);assert.equal(e['modal-submit'].textContent,'验证并查看');assert.match(e['modal-content'].innerHTML,/name="code"/);
+});
+
+test('删除账号先确认范围；取消不删除，失败保留弹窗，成功回到账号库并清理筛选',async t=>{
+  const h=pageHarness(t),{modules:m,elements:e}=h;
+  const input={name:'<b>测试账号</b>',identifier:'one',type:'平台',status:'正常',newTags:['保留标签']};
+  const id=h.store.saveAccount(input),other=h.store.saveAccount({...input,identifier:'other'});
+  h.store.saveRelation({from:id,to:other,type:'注册'});
+  await m.data.reload();h.context.location.hash=`#account/${id}/overview`;
+  Object.assign(m.app.state,{selected:id,graphFocus:id,recordAccount:id});m.app.render();
+  assert.ok(e.main.innerHTML.includes(`data-action="delete-account" data-id="${id}"`));
+  await h.click('delete-account',id);
+  assert.equal(e.modal.open,true);assert.equal(e['modal-title'].textContent,'删除账号');
+  assert.match(e['modal-content'].innerHTML,/&lt;b&gt;测试账号&lt;\/b&gt;/);assert.doesNotMatch(e['modal-content'].innerHTML,/<b>测试账号/);
+  for(const text of ['已保存的密码','订阅及其历史','账号操作记录','其他账号及自定义标签保留','无法撤销'])assert.ok(e['modal-content'].innerHTML.includes(text));
+  assert.equal(e['modal-submit'].textContent,'确认删除');assert.equal(e['modal-submit'].className,'button destructive');
+  assert.equal(e['modal-cancel'].focused,true);assert.equal(h.store.archive().accounts.length,2);
+  await h.click('close-modal');assert.equal(e.modal.open,false);assert.equal(h.store.archive().accounts.length,2);
+  await h.click('delete-account',id);h.offline(true);await h.submit({});
+  assert.equal(e.modal.open,true);assert.match(e['form-error'].textContent,/连接失败/);assert.equal(h.store.archive().accounts.length,2);
+  h.offline(false);h.store.saveAccount({...input,notes:'另一页面修改',version:1},id);await h.submit({});
+  assert.equal(e.modal.open,true);assert.match(e['form-error'].textContent,/发生变化/);assert.equal(h.store.archive().accounts.length,2);
+  await h.click('close-modal');await m.data.reload();await h.click('delete-account',id);await h.submit({});
+  assert.equal(e.modal.open,false);assert.equal(h.context.location.hash,'#accounts');assert.equal(e.main.focused,true);
+  assert.equal(m.data.Archive.get(id),undefined);assert.equal(m.data.Archive.accounts.length,1);assert.equal(m.data.Archive.links.length,0);
+  assert.equal(m.data.Archive.tags.length,1);assert.equal(m.app.state.selected,other);assert.equal(m.app.state.graphFocus,'all');assert.equal(m.app.state.recordAccount,'all');
+  assert.equal(e.toast.textContent,'已删除账号');
+  m.forms.openModal('new-account');assert.equal(e['modal-submit'].className,'button primary');await h.click('close-modal');
+  await h.click('delete-account',other);await h.submit({});
+  assert.equal(m.data.Archive.accounts.length,0);assert.match(e.main.innerHTML,/从第一个账号开始/);
 });

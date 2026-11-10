@@ -148,6 +148,7 @@ export function createApp({databasePath,authPath,keyPath,origin='',allowSetup=fa
           else throw new HttpError(405,'不支持此请求方式。');
         }else if(subevent)throw new HttpError(404,'接口不存在。');
         else if(resource==='accounts'&&((method==='POST'&&!id)||(method==='PUT'&&id)))result=store.saveAccount(input,id);
+        else if(resource==='accounts'&&method==='DELETE'&&id)store.deleteAccount(id,input);
         else if(resource==='tags'&&((method==='POST'&&!id)||(method==='PUT'&&id)))result=store.saveTag(input,id);
         else if(resource==='tags'&&method==='DELETE'&&id)store.deleteTag(id,input);
         else if(resource==='relations'&&((method==='POST'&&!id)||(method==='PUT'&&id)))result=store.saveRelation(input,id);

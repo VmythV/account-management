@@ -123,3 +123,35 @@ test('订阅快照拒绝无效月日、未来时间；失败创建不留下空�
   assert.equal(s.archive().subscriptions.length,0);
   s.createSubscription({account:id,name:'test',...event({renewalCycle:'yearly',renewalMonth:2,renewalDay:29})});
 });
+
+test('删除账号清理所有从属数据，保留其他账号和安全设置；冲突及中途异常整批回滚',async t=>{
+  const {TOTP}=await import('otpauth');
+  const dir=mkdtempSync(join(tmpdir(),'archive-delete-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const path=join(dir,'db.sqlite');let s=openStore(path);t.after(()=>s.close());
+  const pending=s.vault.beginEnrollment();s.vault.confirmEnrollment(pending,new TOTP({secret:pending.secret}).generate());
+  s.vault.savePasskey({id:'credential',publicKey:Buffer.from('public-key'),counter:0},Buffer.from('user'),s.vault.generation());
+  const a=s.saveAccount(account({password:'remove-secret',newTags:['共用标签','独有标签']}));
+  const b=s.saveAccount(account({identifier:'other',password:'keep-secret',newTags:['共用标签']})),c=s.saveAccount(account({name:'邮箱'}));
+  for(const [from,to] of [[a,b],[b,a],[c,a],[b,c]])s.saveRelation({from,to,type:'注册'});
+  const sub=s.createSubscription({account:a,name:'Cloud',...event()});
+  s.saveSubscriptionEvent(sub,{...event({occurredAt:'2025-02-01T00:00:00.000Z'}),version:1});
+  s.createSubscription({account:a,name:'Music',...event()});s.createSubscription({account:b,name:'保留订阅',...event()});
+  const db=new DatabaseSync(path);t.after(()=>db.close());
+  const tables=['accounts','tags','account_tags','account_relations','account_events','subscriptions','subscription_events','account_secrets','vault_settings','passkey_credentials'];
+  const rows=()=>Object.fromEntries(tables.map(table=>[table,db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+  const before=rows();
+  for(const input of [{},{version:0},{version:1,extra:true}])assert.throws(()=>s.deleteAccount(a,input),error=>[400,409].includes(error.status));
+  assert.deepEqual(rows(),before);
+  db.exec("CREATE TRIGGER block_delete BEFORE DELETE ON accounts BEGIN SELECT RAISE(ABORT,'test rollback'); END;");
+  assert.throws(()=>s.deleteAccount(a,{version:1}),/test rollback/);assert.deepEqual(rows(),before);
+  db.exec('DROP TRIGGER block_delete');s.deleteAccount(a,{version:1});
+  const removedSubs=new Set(before.subscriptions.filter(row=>row.account===a).map(row=>row.id));
+  const after=rows();
+  for(const table of tables){
+    const expected=before[table].filter(row=>table==='accounts'?row.id!==a:table==='account_relations'?row.source!==a&&row.target!==a:table==='subscription_events'?!removedSubs.has(row.subscription):!('account' in row)||row.account!==a);
+    assert.deepEqual(after[table],expected,table);
+  }
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check,'ok');
+  assert.throws(()=>s.deleteAccount(a,{version:1}),{status:404});
+  s.close();s=openStore(path);assert.deepEqual(s.archive().accounts.map(row=>row.id).sort(),[b,c].sort());assert.equal(s.archive().subscriptions.length,1);
+});

@@ -200,3 +200,20 @@ test('HTTP 通行密钥注册、逐次解锁、2FA 备用、撤销；会话来�
   assert.equal((await r(path+'/passkey/options','POST',{})).status,409);
   now+=30000;assert.equal((await r(path,'POST',{code:code()})).body.password,'http-secret');
 });
+
+test('HTTP 删除账号要求登录和可信来源；版本冲突拒绝，确认成功后不可再读取',async t=>{
+  const f=await fixture(t),r=f.request;
+  await r('/api/setup','POST',{password,confirm:password});
+  const input={name:'待删除',identifier:'user',type:'平台',status:'正常'};
+  const id=(await r('/api/accounts','POST',input)).body.id;
+  const path=`/api/accounts/${id}`;
+  assert.equal((await r(path,'DELETE',{version:1},{Cookie:''})).status,401);
+  assert.equal((await r(path,'DELETE',{version:1},{Origin:'https://evil.example'})).status,403);
+  assert.equal((await r(path,'DELETE',{})).status,409);
+  await r(path,'PUT',{...input,version:1,notes:'updated'});
+  assert.equal((await r(path,'DELETE',{version:1})).status,409);assert.equal((await r('/api/archive')).body.accounts.length,1);
+  assert.equal((await r(path,'DELETE',{version:2})).status,200);
+  const archive=(await r('/api/archive')).body;assert.equal(archive.accounts.length,0);assert.equal(archive.events.length,0);
+  assert.equal((await r(path,'DELETE',{version:2})).status,404);
+  assert.equal((await r(path,'PUT',{...input,version:2})).status,404);
+});
