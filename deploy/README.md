@@ -241,3 +241,24 @@ https://ai-builder.world 的“常用服务”中添加“账号档案”，与�
 首次部署不迁移原订阅项目或本地账号数据。上线验收包含 SQLite 完整性和空库检查、访问密码哈希一致性、未登录保护、HTTPS 跳转、证书域名、定时任务与续期模拟。
 
 数据备份目前手动执行：先停止应用，复制完整 `data/` 与 `config/app.env`，另行备份 `config/vault.key`，保持私有权限，再启动应用。备份应另存到服务器之外；更新前的同机备份不用于异地恢复。
+
+## 从旧订阅管理迁移与回退
+
+一次性导入工具为 `program/app/scripts/import-subscriptions.mjs`。来源库为 `/data/service/ai-subscription-records/data/subscriptions.sqlite`，目标库为本项目的 `data/accounts.sqlite`。使用本项目 Node.js 运行环境；系统 Python SQLite 版本过旧，不能用于读取 STRICT 表。
+
+执行前将审核的计划、演练快照及报告保存在本项目 `backups/import-<日期>/`，目录权限 `0700`、文件 `0600`，仅服务器所有者访问。计划与报告不得上传公开仓库。先在数据库副本执行并验证全部历史、状态、续费规则和累计时长；之后停止 `ai-subscription-records` 与 `account-archive`，完整复制两个服务的数据目录及配置，单独备份目标加密密钥，核对计划摘要后执行：
+
+```sh
+sudo /data/service/account-archive/program/runtime/bin/node \
+  /data/service/account-archive/program/app/scripts/import-subscriptions.mjs \
+  /data/service/ai-subscription-records/data/subscriptions.sqlite \
+  /data/service/account-archive/data/accounts.sqlite \
+  '/data/service/account-archive/backups/import-<日期>/plan.json' \
+  '/data/service/account-archive/backups/import-<日期>/result.json' --apply
+```
+
+替换示例中的 `<日期>` 为实际批次目录。脚本不会自动停止服务。报告包含旧订阅、新账号、目标订阅及节点 ID 映射。目标已有账号字段保留，标签追加时版本号递增；合并订阅时仅追加历史并递增版本号。重跑相同计划不会重复导入；报告使用另一个新文件名。来源数据或已导入数据变化时须重新核对，不能强行覆盖。
+
+**回退**：停止 `account-archive`，先备份当前目标 `data/`，再恢复本次迁移前冷备份的完整目标 `data/`，保持 `account-archive:account-archive` 属主、目录 `0700`、文件 `0600`；程序或配置若随批次切换，恢复批次记录中的原 release 链接及配置，再启动并检查 `/api/session` 和数据。来源数据库未被修改，无需回退。原密钥保持原样，禁止生成新密钥替代。回退整个数据库会撤销迁移之后的新增或修改，执行前需核对时间范围。
+
+迁移后两个服务不会自动同步。旧服务保留作核对，后续日常记录使用账号档案；是否下线旧服务另行决定。每次实际执行的备份路径、版本和验收结果追加在服务器项目根目录的 README 中。

@@ -51,6 +51,21 @@ npm run reset-2fa -- --confirm-reset
 
 重置会同时撤销通行密钥，重启服务并登录后重新绑定验证器，再按需绑定新的通行密钥。重置不会解密或删除已保存密码，也不能跳过验证；管理工具访问密码仍需保留。服务器专用命令见 [部署文档](deploy/README.md)。
 
+## 从旧订阅档案导入
+
+`scripts/import-subscriptions.mjs` 用于已审核的一次性导入：来源为 `ai-subscription-records` 版本 2 数据库，目标为本工具版本 4 数据库。合并关系由私有计划文件明确指定，其他订阅分别创建账号，保留旧名称；同邮箱不同旧记录不会自动合并。操作时间、描述、状态、等级、续费规则与原备注保留，原记录邮箱补充到历史备注；追加“旧订阅导入”标签及导入操作记录。
+
+脚本复用订阅校验，全部写入位于单个事务；默认执行后回滚，只有 `--apply` 才提交。来源库只读，已有密码、验证器、通行密钥和关联表不会修改。数据库结构版本保持 4，无网页导入入口或自动同步。
+
+计划包含 `sourceDigest`、`targetDigest` 及 `merges`（旧订阅 ID → `{accountId, subscriptionId}`），分别通过脚本导出的 `readSource(db).digest`、`targetFingerprint(db)` 生成并审核。计划、数据库和含记录映射的报告只能放在受保护目录，不提交 Git。应先在一致性备份的副本上演练；正式导入前停止两个服务，冷备份后再核对摘要。
+
+```sh
+node scripts/import-subscriptions.mjs 来源.sqlite 目标副本.sqlite 计划.json 演练报告.json --apply
+# 核验副本后，停机并备份，再对真实目标执行相同命令。
+```
+
+报告文件必须是新路径。导入记录使用按来源生成的稳定 ID；重复执行相同计划会验证并跳过已有记录。来源发生变化、目标在首次导入前变化、部分导入、已导入节点被修改或出现时间冲突时，脚本拒绝覆盖。此工具用于一次性迁移，不能当成持续同步或修复编辑后的历史。恢复方法见[服务器部署文档](deploy/README.md)。
+
 ## 订阅历史与时间
 
 每条订阅记录保存操作后的完整状态、等级、备注和续费规则。**按实际发生时间排序**，最新节点决定当前信息；补录较早节点不会覆盖最新状态。更正历史只改变该节点，重新计算累计时长。每项订阅的操作时间必须唯一，页面支持秒级填写。
@@ -124,7 +139,7 @@ node tests/prototype.test.cjs
 | `public/graphs.js`、`public/vendor/` | 关联图谱及离线组件 |
 | `dist/` | 独立保留的设计原型 |
 
-当前按单人、单进程工具实现；不包含多人协作、云同步、自动备份、自动续费或旧项目数据迁移。
+当前按单人、单进程工具实现；不包含多人协作、云同步、自动备份或自动续费。旧订阅数据可通过上述受控脚本一次性导入。
 
 实现核对了 Context7 中的 [Node.js SQLite](https://nodejs.org/docs/latest-v24.x/api/sqlite.html) 和 [crypto.scrypt](https://nodejs.org/docs/latest-v24.x/api/crypto.html#cryptoscryptpassword-salt-keylen-options-callback) 文档。`node:sqlite` 在 24.x 仍标记为候选发布接口，升级运行环境后需重新运行测试。图谱组件版本和许可证见 [vendor/README.md](public/vendor/README.md)。
 
