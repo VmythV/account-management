@@ -55,7 +55,7 @@ export function openModal(kind,id){
     content=`<p class="modal-description">先验证管理工具访问密码，再用验证器 App 扫码绑定。所有账号共用这个验证器。</p>${field('管理工具访问密码','accessPassword','',{type:'password',required:true,maxLength:256,autocomplete:'current-password'})}<p class="hint">不提供恢复码。验证器丢失后，只能通过服务器重置。</p>`;
   }else if(kind==='bind-passkey'||kind==='remove-passkey'){
     title=kind==='remove-passkey'?'移除通行密钥':A.security?.passkeyEnabled?'更换通行密钥':'绑定通行密钥';submit=kind==='remove-passkey'?'验证并移除':'验证并绑定';
-    content=`<p class="modal-description">${kind==='remove-passkey'?'移除后仍可通过 2FA 验证码查看密码。':'验证访问密码和 2FA 后，由系统创建通行密钥。更换成功后，旧通行密钥失效。'}</p>${field('管理工具访问密码','accessPassword','',{type:'password',required:true,maxLength:256,autocomplete:'current-password'})}${codeField()}<p class="hint">绑定或移除都会消耗本次验证码。系统可能使用 Touch ID 或设备密码。</p>`;
+    content=`<p class="modal-description">${kind==='remove-passkey'?'移除后使用密码登录，并通过 2FA 验证码查看账号密码。':'验证访问密码和 2FA 后，由系统创建用于登录及查看密码的通行密钥。更换成功后，旧密钥及其登录会话失效。'}</p>${field('管理工具访问密码','accessPassword','',{type:'password',required:true,maxLength:256,autocomplete:'current-password'})}${codeField()}<p class="hint">绑定或移除都会消耗本次验证码。系统可能使用 Touch ID 或设备密码。</p>`;
   }else if(kind==='reveal-password'){
     context.usePasskey=!!A.security?.passkeyEnabled&&!!window.SimpleWebAuthnBrowser?.browserSupportsWebAuthn();
     title='验证后查看密码';submit=context.usePasskey?'Touch ID / 系统验证':'验证并查看';content=revealFields(context);

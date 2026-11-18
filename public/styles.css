@@ -58,6 +58,8 @@
 .login-card h1{font-size:var(--font-title);margin-bottom:14px}
 .login-description{font-size:var(--font-body);line-height:1.8;color:var(--muted);margin-bottom:28px}
 .login-error{padding:10px;background:#fcf0eb;color:#93492f;margin-bottom:18px;border-radius:6px;font-size:var(--font-body)}
+.login-divider{display:flex;align-items:center;gap:12px;margin:22px 0;color:var(--muted);font-size:var(--font-caption)}
+.login-divider::before,.login-divider::after{content:"";flex:1;height:1px;background:var(--line)}
 #login-success{font-size:var(--font-body);line-height:2;color:#446f55}
 .subscription-name{font-size:var(--font-section);margin-bottom:18px;font-weight:550}
 .tags-manager{padding:0 24px}

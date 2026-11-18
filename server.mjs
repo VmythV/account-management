@@ -38,12 +38,15 @@ export function createApp({databasePath,authPath,keyPath,origin='',allowSetup=fa
   const store=openStore(databasePath,{keyPath});
   const sessions=new Map();
   const enrollments=new Map();
-  const sessionActive=token=>(sessions.get(token)||0)>Date.now();
+  const sessionActive=token=>{const s=sessions.get(token);return !!s&&s.expires>Date.now()&&(s.generation===null||s.generation===store.vault.generation());};
   const passkeys=createPasskeys(store.vault,sessionActive);
+  const loginAttempts=new Map();
+  const loginPasskeys=createPasskeys(store.vault,token=>(loginAttempts.get(token)||0)>Date.now());
   let attempts=0,attemptUntil=0,hashing=0;
   const cookie=(token,age)=>`archive_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${age}${origin?'; Secure':''}`;
+  const loginCookie=(token,age)=>`archive_login=${token}; Path=/api/login; HttpOnly; SameSite=Strict; Max-Age=${age}${origin?'; Secure':''}`;
   const assets=new Map();
-  assets.set('/vendor/simplewebauthn.min.js',{body:readFileSync(resolve(root,'node_modules/@simplewebauthn/browser/dist/bundle/index.umd.min.js')),type:'text/javascript; charset=utf-8',public:false});
+  assets.set('/vendor/simplewebauthn.min.js',{body:readFileSync(resolve(root,'node_modules/@simplewebauthn/browser/dist/bundle/index.umd.min.js')),type:'text/javascript; charset=utf-8',public:true});
   for(const name of ['index.html','login.html','styles.css','login.js','app.js','ui.js','data.js','forms.js','graphs.js','timeline.js','selects.js','vendor/cytoscape.min.js','vendor/cytoscape-dagre.js','vendor/tom-select.complete.min.js','vendor/tom-select.css']){
     const type=name.endsWith('.html')?'text/html; charset=utf-8':name.endsWith('.css')?'text/css; charset=utf-8':'text/javascript; charset=utf-8';
     assets.set('/'+name,{body:readFileSync(resolve(root,'public',name)),type,public:['login.html','login.js','styles.css'].includes(name)});
@@ -64,21 +67,36 @@ export function createApp({databasePath,authPath,keyPath,origin='',allowSetup=fa
       const expectedOrigin=origin||`http://${request.headers.host}`;
       const path=new URL(request.url,expectedOrigin).pathname,method=request.method;
       const token=request.headers.cookie?.split(';').map(v=>v.trim()).find(v=>v.startsWith('archive_session='))?.slice(16);
+      const loginToken=request.headers.cookie?.split(';').map(v=>v.trim()).find(v=>v.startsWith('archive_login='))?.slice(14);
       const now=Date.now();
-      for(const [key,expires] of sessions)if(expires<=now){sessions.delete(key);enrollments.delete(key);passkeys.cancel(key);}
+      for(const key of sessions.keys())if(!sessionActive(key)){sessions.delete(key);enrollments.delete(key);passkeys.cancel(key);}
+      for(const [key,expires] of loginAttempts)if(expires<=now){loginAttempts.delete(key);loginPasskeys.cancel(key);}
       for(const [key,pending] of enrollments)if(pending.expires<=now)enrollments.delete(key);
       const authenticated=sessions.has(token);
       if(!['GET','HEAD'].includes(method)){
         if(request.headers['x-requested-with']!=='account-archive'||request.headers.origin!==expectedOrigin||request.headers['sec-fetch-site']==='cross-site')throw new HttpError(403,'请求来源校验失败，请重新打开页面。');
       }
-      if(path==='/api/session'&&method==='GET')return send(200,{initialized:!!auth,authenticated});
-      if((path==='/api/login'||path==='/api/setup')&&method==='POST'){
+      if(path==='/api/session'&&method==='GET')return send(200,{initialized:!!auth,authenticated,passkeyEnabled:!!auth&&!!store.vault.passkey()});
+      const loginOptions=path==='/api/login/passkey/options',loginVerify=path==='/api/login/passkey/verify';
+      if((path==='/api/login'||path==='/api/setup'||loginOptions||loginVerify)&&method==='POST'){
+        const input=await readJson(request);fields(input,loginOptions?[]:loginVerify?['response']:path==='/api/setup'?['password','confirm']:['password']);
         if(now>=attemptUntil){attempts=0;attemptUntil=now+15*60_000;}
         if(attempts>=10||hashing>=2){response.setHeader('Retry-After',Math.ceil((attemptUntil-now)/1000));throw new HttpError(429,'尝试过于频繁，请稍后重试。');}
-        const input=await readJson(request);fields(input,path==='/api/setup'?['password','confirm']:['password']);
+        if(loginOptions){
+          if(!auth||!store.vault.passkey())throw new HttpError(409,'尚未绑定通行密钥，请使用密码登录。');
+          if(loginToken){loginAttempts.delete(loginToken);loginPasskeys.cancel(loginToken);}
+          if(loginAttempts.size>=100)throw new HttpError(429,'登录请求过多，请稍后重试。');
+          const nonce=randomBytes(32).toString('hex');loginAttempts.set(nonce,Date.now()+120_000);
+          let options;
+          try{options=await loginPasskeys.loginOptions(nonce,expectedOrigin);}
+          catch(error){loginAttempts.delete(nonce);loginPasskeys.cancel(nonce);throw error;}
+          response.setHeader('Set-Cookie',loginCookie(nonce,120));return send(200,options);
+        }
+        let generation=null;
         attempts++;hashing++;
         try{
-          if(path==='/api/setup'){
+          if(loginVerify)generation=await loginPasskeys.login(loginToken,expectedOrigin,input.response);
+          else if(path==='/api/setup'){
             if(auth)throw new HttpError(409,'访问密码已经设置，请直接登录。');
             if(!allowSetup||origin||!loopback(request.socket.remoteAddress))throw new HttpError(403,'只能在本机初始化访问密码。');
             if(input.password!==input.confirm)throw new HttpError(400,'两次输入的密码不一致。');
@@ -86,13 +104,14 @@ export function createApp({databasePath,authPath,keyPath,origin='',allowSetup=fa
           }else if(!auth||!await verifyPassword(auth,input.password))throw new HttpError(401,'密码不正确。');
         }finally{hashing--;}
         attempts=0;if(token){sessions.delete(token);enrollments.delete(token);passkeys.cancel(token);}
+        if(loginToken){loginAttempts.delete(loginToken);loginPasskeys.cancel(loginToken);}
         if(sessions.size>=30){const oldest=sessions.keys().next().value;sessions.delete(oldest);enrollments.delete(oldest);passkeys.cancel(oldest);}
-        const session=randomBytes(32).toString('hex');sessions.set(session,Date.now()+sessionLifetime);
-        response.setHeader('Set-Cookie',cookie(session,sessionLifetime/1000));return send(200,{ok:true});
+        const session=randomBytes(32).toString('hex');sessions.set(session,{expires:Date.now()+sessionLifetime,generation});
+        response.setHeader('Set-Cookie',[cookie(session,sessionLifetime/1000),loginCookie('',0)]);return send(200,{ok:true});
       }
       if(path.startsWith('/api/')){
         if(!authenticated)throw new HttpError(401,'登录已过期，请重新登录后重试。');
-        if(path==='/api/logout'&&method==='POST'){sessions.delete(token);enrollments.delete(token);passkeys.cancel(token);response.setHeader('Set-Cookie',cookie('',0));return send(200,{ok:true});}
+        if(path==='/api/logout'&&method==='POST'){sessions.delete(token);enrollments.delete(token);passkeys.cancel(token);if(loginToken){loginAttempts.delete(loginToken);loginPasskeys.cancel(loginToken);}response.setHeader('Set-Cookie',[cookie('',0),loginCookie('',0)]);return send(200,{ok:true});}
         if(path==='/api/archive'&&method==='GET')return send(200,store.archive());
         if(path==='/api/security/totp/enrollment'&&method==='POST'||path==='/api/security/passkey/registration/options'&&method==='POST'||path==='/api/security/passkey'&&method==='DELETE'){
           const input=await readJson(request),isPasskey=path.includes('/passkey');fields(input,isPasskey?['password','code']:['password']);store.vault.checkRate();

@@ -78,3 +78,39 @@ test('注册需要用户验证，挑战仅用一次；取消、更换及异步�
   o=await keys.authenticationOptions(token,origin,account);await assert.rejects(keys.reveal(token,origin,account,device.authenticate(o,origin)),/系统验证失败/);
   o=await keys.authenticationOptions(token,origin,account);assert.equal(await keys.reveal(token,origin,account,replacement.authenticate(o,origin)),'secret-for-test');
 });
+
+test('通行密钥登录复用绑定，挑战与注册/查看隔离；不解锁密码或清除查看限流',async t=>{
+  const {keys,v,device,account}=await fixture(t);
+  let o=await keys.loginOptions(token,origin),response=device.authenticate(o,origin);
+  assert.equal(o.userVerification,'required');assert.equal(o.allowCredentials[0].id,v.passkey().credentialId);
+  await assert.rejects(keys.reveal(token,origin,account,response),{status:400});
+  const both=await Promise.allSettled([keys.login(token,origin,response),keys.login(token,origin,response)]);
+  assert.equal(both.filter(x=>x.status==='fulfilled').length,1);assert.equal(both.find(x=>x.status==='fulfilled').value,v.generation());
+  await assert.rejects(keys.login(token,origin,response),{status:400});
+  o=await keys.authenticationOptions(token,origin,account);response=device.authenticate(o,origin);
+  await assert.rejects(keys.login(token,origin,response),{status:400});assert.equal(await keys.reveal(token,origin,account,response),'secret-for-test');
+  o=await keys.registrationOptions(token,origin);await assert.rejects(keys.login(token,origin,device.authenticate(o,origin)),{status:400});
+  o=await keys.loginOptions(token,origin);await keys.login(token,origin,device.authenticate(o,origin,{counter:1}));assert.equal(v.passkey().counter,1);
+  o=await keys.loginOptions(token,origin);await assert.rejects(keys.login(token,origin,device.authenticate(o,origin,{counter:1})),/验证失败/);
+  for(let i=0;i<5;i++)assert.throws(()=>v.fail(),{status:400});
+  o=await keys.loginOptions(token,origin);await keys.login(token,origin,device.authenticate(o,origin,{counter:2}));
+  assert.throws(()=>v.checkRate(),{status:429},'登录不能清除密码查看的验证限流');
+});
+
+test('登录拒绝错误签名、来源、RP、挑战、UV、句柄和凭据；取消/过期/撤销后失效',async t=>{
+  const {keys,v,device,active}=await fixture(t);
+  for(const override of [{client:{origin:'https://evil.example'}},{rpID:'evil.example'},{client:{challenge:'invalid'}},{flags:1},{privateKey:generateKeyPairSync('ec',{namedCurve:'prime256v1'}).privateKey},{userHandle:'wrong-user'}]){
+    const o=await keys.loginOptions(token,origin);
+    await assert.rejects(keys.login(token,origin,device.authenticate(o,origin,override)),/验证失败/);
+    await assert.rejects(keys.login(token,origin,device.authenticate(o,origin)),{status:400});
+  }
+  assert.doesNotThrow(()=>v.checkRate(),'未登录的错误签名不占用密码查看的失败次数');
+  let o=await keys.loginOptions(token,origin);await assert.rejects(keys.login(token,origin,authenticator().authenticate(o,origin)),/验证失败/);
+  o=await keys.loginOptions(token,origin);keys.cancel(token);await assert.rejects(keys.login(token,origin,device.authenticate(o,origin)),{status:400});
+  o=await keys.loginOptions(token,origin);await assert.rejects(keys.login('another-browser',origin,device.authenticate(o,origin)),{status:400});
+  active(false);await assert.rejects(keys.login(token,origin,device.authenticate(o,origin)),{status:401});active(true);
+  o=await keys.loginOptions(token,origin);const oldNow=Date.now;Date.now=()=>oldNow()+121_000;
+  try{await assert.rejects(keys.login(token,origin,device.authenticate(o,origin)),{status:409});}finally{Date.now=oldNow;}
+  o=await keys.loginOptions(token,origin);const inflight=keys.login(token,origin,device.authenticate(o,origin));v.removePasskey();await assert.rejects(inflight,{status:409});
+  await assert.rejects(keys.loginOptions(token,origin),{status:409});
+});

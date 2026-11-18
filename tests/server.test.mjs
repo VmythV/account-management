@@ -217,3 +217,92 @@ test('HTTP 删除账号要求登录和可信来源；版本冲突拒绝，确认
   assert.equal((await r(path,'DELETE',{version:2})).status,404);
   assert.equal((await r(path,'PUT',{...input,version:2})).status,404);
 });
+
+async function passkeyLoginFixture(t){
+  const original=Date.now;let now=1_800_000_000_000;Date.now=()=>now;t.after(()=>{Date.now=original;});
+  const f=await fixture(t),r=f.request,device=authenticator();
+  const setup=await r('/api/setup','POST',{password,confirm:password}),admin=setup.headers.getSetCookie()[0].split(';')[0];
+  const pending=(await r('/api/security/totp/enrollment','POST',{password})).body,otp=new TOTP({secret:pending.secret}),code=()=>otp.generate({timestamp:now});
+  await r('/api/security/totp/confirm','POST',{code:code()});now+=30000;
+  const o=(await r('/api/security/passkey/registration/options','POST',{password,code:code()})).body;
+  assert.equal((await r('/api/security/passkey/registration/verify','POST',{response:device.register(o,f.origin)})).status,200);
+  const account=(await r('/api/accounts','POST',{name:'Login test',identifier:'test',type:'平台',status:'正常',password:'still-locked'})).body.id;
+  f.setCookie('');return {f,r,device,admin,account,code,advance(ms=30000){now+=ms;}};
+}
+const loginOptions='/api/login/passkey/options',loginVerify='/api/login/passkey/verify';
+test('HTTP 通行密钥登录与密码并存；挑战 Cookie 隔离、并发防重放、重新登录轮换会话且不解锁密码',async t=>{
+  const {f,r,device,admin,account}=await passkeyLoginFixture(t);
+  const session=(await r('/api/session')).body;assert.equal(session.passkeyEnabled,true);assert.equal(session.authenticated,false);assert.equal(Object.keys(session).length,3);
+  assert.equal((await r('/vendor/simplewebauthn.min.js')).status,200);
+  assert.equal((await r(loginOptions,'POST',{}, {Origin:'https://evil.example'})).status,403);
+  assert.equal((await r(loginOptions,'POST',{}, {'X-Requested-With':''})).status,403);
+  let o=await r(loginOptions,'POST',{});assert.equal(o.status,200);assert.equal(o.body.userVerification,'required');
+  const nonce=o.headers.getSetCookie()[0].split(';')[0];assert.match(o.headers.getSetCookie()[0],/Path=\/api\/login; HttpOnly; SameSite=Strict; Max-Age=120/);
+  const response=device.authenticate(o.body,f.origin);
+  assert.equal((await r('/api/archive','GET',undefined,{Cookie:nonce})).status,401);
+  assert.equal((await r(loginVerify,'POST',{response},{Cookie:''})).status,400);
+  assert.equal((await r(loginVerify,'POST',{response},{Cookie:nonce,Origin:'https://evil.example'})).status,403);
+  const both=await Promise.all([r(loginVerify,'POST',{response},{Cookie:nonce+'; '+admin}),r(loginVerify,'POST',{response},{Cookie:nonce+'; '+admin})]);
+  assert.deepEqual(both.map(x=>x.status).sort(),[200,400]);
+  const success=both.find(x=>x.status===200),cookie=success.headers.getSetCookie()[0].split(';')[0];
+  assert.deepEqual(success.body,{ok:true});assert.notEqual(cookie,admin);assert.match(success.headers.getSetCookie()[1],/archive_login=;.*Max-Age=0/);
+  assert.equal((await r('/api/archive','GET',undefined,{Cookie:admin})).status,401);
+  assert.equal((await r('/api/archive','GET',undefined,{Cookie:cookie})).status,200);
+  assert.equal((await r(`/api/accounts/${account}/password/passkey/verify`,'POST',{response},{Cookie:cookie})).status,400);
+  assert.equal((await r(loginVerify,'POST',{response},{Cookie:nonce})).status,400);
+  f.setCookie(cookie);assert.equal((await r('/api/logout','POST',{})).status,200);
+  assert.equal((await r('/api/login','POST',{password})).status,200,'密码备用入口继续工作');
+});
+
+test('HTTP 登录过期/重新开始/密码回退/重启均废弃旧挑战；撤销旧密钥登录会话',async t=>{
+  const {f,r,device,admin,code,advance}=await passkeyLoginFixture(t);
+  let o=await r(loginOptions,'POST',{}),nonce=o.headers.getSetCookie()[0].split(';')[0],response=device.authenticate(o.body,f.origin);
+  advance(121000);assert.equal((await r(loginVerify,'POST',{response},{Cookie:nonce})).status,400);
+  o=await r(loginOptions,'POST',{});nonce=o.headers.getSetCookie()[0].split(';')[0];response=device.authenticate(o.body,f.origin);
+  await r(loginOptions,'POST',{}, {Cookie:nonce});assert.equal((await r(loginVerify,'POST',{response},{Cookie:nonce})).status,400);
+  o=await r(loginOptions,'POST',{});nonce=o.headers.getSetCookie()[0].split(';')[0];response=device.authenticate(o.body,f.origin);
+  await r('/api/login','POST',{password},{Cookie:nonce});assert.equal((await r(loginVerify,'POST',{response},{Cookie:nonce})).status,400);
+  o=await r(loginOptions,'POST',{});nonce=o.headers.getSetCookie()[0].split(';')[0];response=device.authenticate(o.body,f.origin);
+  await f.restart();assert.equal((await r(loginVerify,'POST',{response},{Cookie:nonce})).status,400);
+  const passwordSession=(await r('/api/login','POST',{password})).headers.getSetCookie()[0].split(';')[0];
+  f.setCookie('');o=await r(loginOptions,'POST',{});response=device.authenticate(o.body,f.origin);
+  const signed=await r(loginVerify,'POST',{response});assert.equal(signed.status,200);const passkeySession=signed.headers.getSetCookie()[0].split(';')[0];
+  o=await r(loginOptions,'POST',{}, {Cookie:''});nonce=o.headers.getSetCookie()[0].split(';')[0];response=device.authenticate(o.body,f.origin);
+  const replacement=authenticator();advance();
+  const registration=(await r('/api/security/passkey/registration/options','POST',{password,code:code()},{Cookie:passwordSession})).body;
+  assert.equal((await r('/api/security/passkey/registration/verify','POST',{response:replacement.register(registration,f.origin)},{Cookie:passwordSession})).status,200);
+  assert.equal((await r('/api/archive','GET',undefined,{Cookie:passkeySession})).status,401);
+  assert.equal((await r('/api/archive','GET',undefined,{Cookie:passwordSession})).status,200);
+  assert.equal((await r(loginVerify,'POST',{response},{Cookie:nonce})).status,409);
+  f.setCookie('');o=await r(loginOptions,'POST',{});
+  const newSession=(await r(loginVerify,'POST',{response:replacement.authenticate(o.body,f.origin)})).headers.getSetCookie()[0].split(';')[0];
+  assert.equal((await r('/api/archive','GET',undefined,{Cookie:newSession})).status,200);
+  advance();assert.equal((await r('/api/security/passkey','DELETE',{password,code:code()},{Cookie:passwordSession})).status,200);
+  assert.equal((await r('/api/archive','GET',undefined,{Cookie:newSession})).status,401);
+  assert.equal((await r(loginOptions,'POST',{})).status,409);assert.equal((await r('/api/session')).body.passkeyEnabled,false);
+  assert.equal((await r('/api/login','POST',{password})).status,200);
+});
+
+test('HTTP 错误通行密钥登录共用登录限流，HTTPS 挑战 Cookie 为 Secure',async t=>{
+  const {f,r,device}=await passkeyLoginFixture(t);
+  const remote=createApp({...f.config,origin:'https://accounts.example.com',allowSetup:false});remote.listen(0,'127.0.0.1');await once(remote,'listening');
+  t.after(()=>new Promise(resolve=>{remote.close(resolve);remote.closeAllConnections();}));
+  const res=await rawRequest(`http://127.0.0.1:${remote.address().port}${loginOptions}`,{method:'POST',headers:{Host:'accounts.example.com',Origin:'https://accounts.example.com','Content-Type':'application/json','X-Requested-With':'account-archive'},body:'{}'});
+  assert.equal(res.status,200);assert.match(res.headers.getSetCookie()[0],/; Secure/);assert.equal(JSON.parse(res.text).rpId,'accounts.example.com');
+  for(let i=0;i<10;i++){
+    const o=await r(loginOptions,'POST',{});assert.equal(o.status,200);
+    const response=device.authenticate(o.body,f.origin,{flags:1});assert.equal((await r(loginVerify,'POST',{response})).status,400);
+  }
+  assert.equal((await r(loginOptions,'POST',{})).status,429);
+  assert.equal((await r('/api/login','POST',{password})).status,429);
+});
+
+test('未登录挑战数量有上限，过期释放；未绑定时不能申请通行密钥登录',async t=>{
+  const {f,r,advance}=await passkeyLoginFixture(t);
+  for(let i=0;i<100;i++)assert.equal((await r(loginOptions,'POST',{}, {Cookie:''})).status,200);
+  assert.equal((await r(loginOptions,'POST',{}, {Cookie:''})).status,429);
+  assert.equal((await r('/api/login','POST',{password},{Cookie:''})).status,200,'挑战容量不阻止密码登录');
+  advance(121000);f.setCookie('');assert.equal((await r(loginOptions,'POST',{})).status,200);
+  const blank=await fixture(t);assert.equal((await blank.request('/api/session')).body.passkeyEnabled,false);
+  assert.equal((await blank.request(loginOptions,'POST',{})).status,409);
+});
